@@ -4,7 +4,8 @@
   "outputDirectory": "smart-event-management-system/frontend/dist",
   "functions": {
     "api/**/*.py": {
-      "includeFiles": "smart-event-management-system/**",
+      "includeFiles": "{smart-event-management-system/backend/**,smart-event-management-system/frontend/dist/**}",
+      "excludeFiles": "{**/node_modules/**,**/venv/**,**/.venv/**,**/__pycache__/**}",
       "maxDuration": 30
     }
   },
