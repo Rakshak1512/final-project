@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -108,8 +108,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
-@app.get("/", tags=["Health"])
-def root():
+@app.get("/api", tags=["Health"])
+@app.get("/api/", tags=["Health"])
+def api_root():
     return {"status": "ok", "app": settings.APP_NAME, "version": "1.0.0"}
 
 
@@ -151,3 +152,43 @@ app.include_router(admin_routes.reports_root_router)
 app.include_router(result_routes.router)
 app.include_router(search_routes.router)
 app.include_router(websocket_routes.router)
+
+# Mount static frontend assets and provide SPA fallback routing
+_dist_search_paths = [
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "frontend", "dist"),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "smart-event-management-system", "frontend", "dist"),
+    os.path.abspath("smart-event-management-system/frontend/dist"),
+    "/var/task/smart-event-management-system/frontend/dist",
+]
+_frontend_dist = None
+for _dp in _dist_search_paths:
+    if os.path.exists(_dp) and os.path.exists(os.path.join(_dp, "index.html")):
+        _frontend_dist = os.path.abspath(_dp)
+        break
+
+if _frontend_dist:
+    _assets_dir = os.path.join(_frontend_dist, "assets")
+    if os.path.exists(_assets_dir):
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    async def serve_root():
+        index_html = os.path.join(_frontend_dist, "index.html")
+        return FileResponse(index_html)
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa_frontend(request: Request, full_path: str):
+        if full_path.startswith(("api/", "docs", "openapi.json", "uploads/")):
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = os.path.join(_frontend_dist, full_path)
+        if full_path and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        index_html = os.path.join(_frontend_dist, "index.html")
+        if os.path.isfile(index_html):
+            return FileResponse(index_html)
+        raise HTTPException(status_code=404, detail="Not Found")
+else:
+    @app.get("/", tags=["Health"])
+    def root():
+        return {"status": "ok", "app": settings.APP_NAME, "version": "1.0.0"}
