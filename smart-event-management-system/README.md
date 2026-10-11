@@ -175,19 +175,24 @@ Set `SEED_TEST_USERS=true` in `backend/.env` if you want demo test accounts prov
 
 ## 10. Email & AI Provider Configuration
 
-### Email Authentication (Resend HTTP API)
-EventSphere uses the **Resend HTTP API** as the primary email provider for:
+### Email Authentication (Gmail SMTP exclusively)
+EventSphere uses **Gmail SMTP (`smtplib`)** with `STARTTLS` on port 587 as the exclusive email delivery provider for:
 - 6-digit registration OTP verification
-- Password-reset OTP notifications
+- 6-digit password-reset OTP verification (no reset links)
 - Institutional account approval & rejection alerts
 - Event registration confirmation passes
 - Certificate issuance notices
 
 In `backend/.env`:
 ```env
-RESEND_API_KEY=re_your_api_key_here
-RESEND_FROM_EMAIL=onboarding@resend.dev  # Or your verified custom sending domain
-EMAIL_PROVIDER=resend
+EMAIL_PROVIDER=smtp
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=smart.event.system2026@gmail.com
+SMTP_PASSWORD=your_16_char_google_app_password
+SMTP_FROM_NAME=EventSphere
+SMTP_FROM_EMAIL=smart.event.system2026@gmail.com
+SMTP_USE_TLS=True
 ```
 
 ### AI Chatbot (Google Gemini & OpenAI)

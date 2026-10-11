@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "buildCommand": "npm --prefix smart-event-management-system/frontend install && npm --prefix smart-event-management-system/frontend run build",
+  "outputDirectory": "smart-event-management-system/frontend/dist",
+  "functions": {
+    "api/**/*.py": {
+      "includeFiles": "smart-event-management-system/backend/**",
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/docs",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/openapi.json",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/((?!api/|docs|openapi.json).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

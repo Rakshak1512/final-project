@@ -43,6 +43,7 @@ from app.services.email_service import (
     send_admin_new_faculty_alert_email,
     send_otp_email,
     send_password_reset_email,
+    send_password_reset_otp_email,
     send_verification_email,
 )
 
@@ -264,7 +265,6 @@ def register(payload: UserCreate, request: Request):
             "department": dept,
             "semester": sem,
             "hashed_otp": hashed_otp,
-            "otp_code": otp,
             "attempts": 0,
             "max_attempts": settings.OTP_MAX_ATTEMPTS,
             "last_sent_at": datetime.now(timezone.utc),
@@ -274,14 +274,16 @@ def register(payload: UserCreate, request: Request):
         db_service.save_pending_registration(pending_data)
         logger.info("[AUTH] [OTP] Pending registration saved securely for %s", _mask_email(clean_email))
 
-        # Dispatch OTP via Resend
+        # Dispatch OTP via Gmail SMTP
         try:
             email_sent, email_msg = send_otp_email(clean_email, otp, payload.name.strip(), settings.OTP_EXPIRE_MINUTES)
             if not email_sent:
+                # Do not leave pending registration orphaned if delivery failed
+                db_service.delete_pending_registration(clean_email)
                 logger.error("[AUTH] [EMAIL] Registration verification email could not be sent to %s: %s", _mask_email(clean_email), email_msg)
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Verification email delivery failed via Resend: {email_msg}",
+                    detail=f"Verification email delivery failed: {email_msg}",
                 )
         except HTTPException:
             raise
@@ -289,7 +291,7 @@ def register(payload: UserCreate, request: Request):
             logger.error("[AUTH] [EMAIL] Unexpected error delivering OTP to %s: %s", _mask_email(clean_email), mail_err)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Unable to send verification email via Resend: {mail_err}",
+                detail=f"Unable to send verification email: {mail_err}",
             )
 
         # Return unverified placeholder UserOut object without exposing OTP
@@ -469,7 +471,7 @@ def send_email_login_otp(payload: EmailSendOtpRequest, request: Request):
         logger.error("[AUTH] [EMAIL] Failed to send login OTP to %s: %s", _mask_email(clean_email), email_msg)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Unable to send login OTP via Resend: {email_msg}",
+            detail=f"Unable to send login OTP: {email_msg}",
         )
 
     return {"message": "Login OTP has been sent to your email."}
@@ -538,7 +540,7 @@ def resend_verification_otp(payload: ResendOtpRequest):
         logger.info("[AUTH] [OTP] New OTP generated for resend to %s", _mask_email(clean_email))
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
         pending["hashed_otp"] = hashed_otp
-        pending["otp_code"] = otp
+        pending.pop("otp_code", None)
         pending["attempts"] = 0
         pending["last_sent_at"] = datetime.now(timezone.utc)
         pending["expires_at"] = expires_at
@@ -549,7 +551,7 @@ def resend_verification_otp(payload: ResendOtpRequest):
             logger.error("[AUTH] [EMAIL] Failed to resend verification email to %s: %s", _mask_email(clean_email), email_msg)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Unable to send verification email via Resend: {email_msg}",
+                detail=f"Unable to send verification email: {email_msg}",
             )
         return {"message": "Verification OTP resent successfully"}
 
@@ -565,7 +567,7 @@ def resend_verification_otp(payload: ResendOtpRequest):
             logger.error("[AUTH] [EMAIL] Failed to resend verification email to legacy user %s: %s", _mask_email(clean_email), email_msg)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Unable to send verification email via Resend: {email_msg}",
+                detail=f"Unable to send verification email: {email_msg}",
             )
         return {"message": "Verification OTP resent successfully"}
 
@@ -670,66 +672,170 @@ def refresh_token(payload: TokenRefreshRequest):
 
 @router.post("/forgot-password")
 def forgot_password(payload: ForgotPasswordRequest):
+    """Initiate password reset by generating a secure 6-digit OTP and sending via Gmail SMTP."""
     clean_email = str(payload.email).strip().lower()
     user = db_service.get_user_by_email(clean_email)
     if not user:
-        return {"message": "If that email exists, a reset OTP has been sent"}
+        # Never reveal user existence for privacy
+        return {"message": "If that email exists, a password reset OTP has been sent."}
 
-    otp = generate_otp()
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
+    # 1. Enforce 60-second resend cooldown
+    recent = db_service.get_recent_password_reset_request(user.id)
+    if recent and getattr(recent, "created_at", None):
+        cat = recent.created_at
+        if cat.tzinfo is None:
+            cat = cat.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - cat).total_seconds()
+        cooldown = getattr(settings, "OTP_RESEND_COOLDOWN_SECONDS", 60) or 60
+        if elapsed < cooldown:
+            wait_sec = int(cooldown - elapsed)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Please wait {wait_sec} seconds before requesting a new OTP.",
+            )
+
+    # 2. Generate 6-digit cryptographically secure numeric OTP
+    otp = generate_otp(getattr(settings, "OTP_LENGTH", 6) or 6)
+    expire_mins = getattr(settings, "OTP_EXPIRE_MINUTES", 5) or 5
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=expire_mins)
+
+    # 3. Invalidate older OTPs and save hashed OTP
     db_service.create_password_reset(user.id, otp, expires_at)
-    sent = send_password_reset_email(user.email, user.name, otp)
-    if not sent:
-        logger.error("[AUTH] [EMAIL] Password reset email could not be sent to %s via Resend", _mask_email(user.email))
+
+    # 4. Dispatch OTP via Gmail SMTP
+    email_sent, email_msg = send_password_reset_otp_email(user.email, user.name, otp, expire_mins)
+    if not email_sent:
+        logger.error("[AUTH] [EMAIL] Password reset email could not be sent to %s: %s", _mask_email(user.email), email_msg)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Unable to send password reset email via Resend. Please try again later.",
+            detail=f"Unable to send password reset email: {email_msg}",
         )
 
-    return {"message": "If that email exists, a reset OTP has been sent"}
+    logger.info("[AUTH] [OTP] Secure password reset OTP issued to %s (Expires in %d min)", _mask_email(user.email), expire_mins)
+    return {"message": "If that email exists, a password reset OTP has been sent."}
 
 
 @router.post("/verify-reset-otp")
 def verify_reset_otp(payload: VerifyResetOtpRequest):
-    user = db_service.get_user_by_email(payload.email)
+    """Verify submitted 6-digit password reset OTP on the backend before allowing password update."""
+    clean_email = str(payload.email).strip().lower()
+    otp_input = str(payload.otp_code).strip()
+    user = db_service.get_user_by_email(clean_email)
     if not user:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP")
 
-    reset = db_service.get_latest_password_reset(user.id, payload.otp_code)
+    reset = db_service.get_latest_password_reset_for_user(user.id)
     if not reset:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP. Please request a new OTP.")
 
+    # 1. Enforce max attempts limit (5)
+    max_att = getattr(reset, "max_attempts", getattr(settings, "OTP_MAX_ATTEMPTS", 5)) or 5
+    att = getattr(reset, "attempts", 0)
+    if att >= max_att:
+        db_service.mark_password_reset_used(reset.id)
+        logger.warning("[AUTH] [OTP] Password reset blocked (max attempts exceeded) for %s", _mask_email(clean_email))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum verification attempts exceeded. Please request a new OTP.",
+        )
+
+    # 2. Enforce expiration (5-10 minutes)
     exp = reset.expires_at
     if exp.tzinfo is None:
         exp = exp.replace(tzinfo=timezone.utc)
     if exp < datetime.now(timezone.utc):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP")
+        db_service.mark_password_reset_used(reset.id)
+        logger.warning("[AUTH] [OTP] Password reset OTP expired for %s", _mask_email(clean_email))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This OTP has expired. Please request a new OTP.",
+        )
 
-    return {"message": "OTP verified. You may now reset your password."}
+    # 3. Constant-time secure verification
+    is_valid = False
+    if getattr(reset, "hashed_otp", None):
+        is_valid = verify_otp_hash(otp_input, reset.hashed_otp)
+    elif getattr(reset, "otp_code", None):
+        is_valid = (str(reset.otp_code).strip() == otp_input)
+
+    if not is_valid:
+        new_att = att + 1
+        db_service.update_password_reset(reset.id, {"attempts": new_att})
+        remaining = max_att - new_att
+        logger.warning(
+            "[AUTH] [OTP] Invalid password reset OTP attempt %d/%d for %s",
+            new_att,
+            max_att,
+            _mask_email(clean_email),
+        )
+        if remaining <= 0:
+            db_service.mark_password_reset_used(reset.id)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Maximum verification attempts exceeded. Please request a new OTP.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid OTP. {remaining} attempt(s) remaining.",
+        )
+
+    return {"message": "OTP verified successfully. You may now reset your password."}
 
 
 @router.post("/reset-password")
 def reset_password(payload: ResetPasswordRequest, request: Request):
-    user = db_service.get_user_by_email(payload.email)
+    """Verify OTP and update user password, invalidating OTP and synchronizing Firebase Auth."""
+    clean_email = str(payload.email).strip().lower()
+    otp_input = str(payload.otp_code).strip()
+    user = db_service.get_user_by_email(clean_email)
     if not user:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request")
 
-    reset = db_service.get_latest_password_reset(user.id, payload.otp_code)
+    reset = db_service.get_latest_password_reset_for_user(user.id)
     if not reset:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP")
 
+    # Expiry check
     exp = reset.expires_at
     if exp.tzinfo is None:
         exp = exp.replace(tzinfo=timezone.utc)
     if exp < datetime.now(timezone.utc):
+        db_service.mark_password_reset_used(reset.id)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP")
 
+    # OTP verification
+    is_valid = False
+    if getattr(reset, "hashed_otp", None):
+        is_valid = verify_otp_hash(otp_input, reset.hashed_otp)
+    elif getattr(reset, "otp_code", None):
+        is_valid = (str(reset.otp_code).strip() == otp_input)
+
+    if not is_valid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP")
+
+    # Update password in Firestore
     db_service.update_user(user.id, {"hashed_password": hash_password(payload.new_password)})
+
+    # Invalidate this OTP and all other active resets for this user
     db_service.mark_password_reset_used(reset.id)
+    db_service.invalidate_all_password_resets(user.id)
+
+    # Synchronize Firebase Authentication credentials
+    try:
+        fb_user = firebase_auth_admin.get_user_by_email(clean_email)
+        if fb_user:
+            firebase_auth_admin.update_user(
+                fb_user.uid,
+                password=payload.new_password,
+                email_verified=True,
+                display_name=user.name,
+            )
+            logger.info("Firebase Auth password synced after reset for %s", _mask_email(clean_email))
+    except Exception as fb_err:
+        logger.warning("Firebase password sync skipped for %s: %s", _mask_email(clean_email), fb_err)
 
     _log(user.id, "password_reset", request)
-
-    return {"message": "Password reset successfully"}
+    return {"message": "Password reset successfully. You can now login with your new password."}
 
 
 @router.get("/me", response_model=UserOut)

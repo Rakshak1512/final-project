@@ -5,7 +5,6 @@ export const authService = {
   register: (payload) => api.post("/auth/register", payload),
   firebaseRegister: (payload) => api.post("/auth/firebase/register", payload),
   firebaseSession: (payload) => api.post("/auth/firebase/session", payload),
-  prepareFirebasePasswordReset: (payload) => api.post("/auth/firebase/prepare-password-reset", payload),
   verifyEmail: (payload) => api.post("/auth/verify-email", payload),
   resendOtp: (payload) => api.post("/auth/resend-verification-otp", payload),
   login: (payload) => api.post("/auth/login", payload),

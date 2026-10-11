@@ -49,17 +49,19 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    allow_origin_regex=r"https://.*\.trycloudflare\.com|https://.*\.loca\.lt",
+    allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.trycloudflare\.com|https://.*\.loca\.lt",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
-os.makedirs(settings.upload_dir_abs, exist_ok=True)
-for sub in ("profile_pictures", "event_posters", "certificates", "qrcodes"):
-    os.makedirs(os.path.join(settings.upload_dir_abs, sub), exist_ok=True)
-
-app.mount("/uploads", StaticFiles(directory=settings.upload_dir_abs), name="uploads")
+try:
+    os.makedirs(settings.upload_dir_abs, exist_ok=True)
+    for sub in ("profile_pictures", "event_posters", "certificates", "qrcodes"):
+        os.makedirs(os.path.join(settings.upload_dir_abs, sub), exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=settings.upload_dir_abs), name="uploads")
+except Exception as _fs_err:
+    logger.warning("Could not mount local /uploads directory (serverless read-only mode): %s", _fs_err)
 
 
 @app.on_event("startup")
@@ -78,9 +80,12 @@ def on_startup():
             logger.error(f"[AUTH] Error seeding test users: {e}")
 
     # Safe email configuration validation without exposing credentials or keys
-    resend_loaded = bool((settings.RESEND_API_KEY or "").strip())
     smtp_loaded = bool(settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD)
-    logger.info(f"[EMAIL] Provider Status -> Resend API: {'ENABLED' if resend_loaded else 'NOT CONFIGURED'} | SMTP: {'ENABLED' if smtp_loaded else 'NOT CONFIGURED'} (Host: {settings.SMTP_HOST}:{settings.SMTP_PORT})")
+    sender_addr = settings.SMTP_FROM_EMAIL or settings.SMTP_USER or "smart.event.system2026@gmail.com"
+    logger.info(
+        f"[EMAIL] Provider: Gmail SMTP (smtplib) | Status: {'CONFIGURED' if smtp_loaded else 'CREDENTIALS NEEDED (set SMTP_PASSWORD in backend/.env)'} "
+        f"| Host: {settings.SMTP_HOST}:{settings.SMTP_PORT} (TLS: {settings.SMTP_USE_TLS}) | Sender: {sender_addr}"
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -115,20 +120,17 @@ def health_check():
 
 @app.get("/api/health/email", tags=["Health"])
 def email_health_check():
-    provider = (settings.EMAIL_PROVIDER or "auto").strip().lower()
-    resend_configured = bool(settings.RESEND_API_KEY and settings.RESEND_FROM_EMAIL)
     smtp_configured = bool(settings.SMTP_USER and settings.SMTP_PASSWORD)
-    active_provider = "resend" if provider == "resend" or (provider == "auto" and resend_configured) else "smtp"
-    active_configured = resend_configured if active_provider == "resend" else smtp_configured
+    sender_addr = settings.SMTP_FROM_EMAIL or settings.SMTP_USER or "smart.event.system2026@gmail.com"
     return {
-        "status": "configured" if active_configured else "not_configured",
-        "provider": active_provider,
-        "resend_configured": resend_configured,
-        "resend_from_email_configured": bool(settings.RESEND_FROM_EMAIL),
-        "smtp_configured": smtp_configured,
+        "status": "configured" if smtp_configured else "credentials_required",
+        "provider": "smtp",
         "smtp_host": settings.SMTP_HOST,
         "smtp_port": settings.SMTP_PORT,
-        "from_email_configured": bool(settings.SMTP_FROM_EMAIL or settings.SMTP_USER),
+        "smtp_user": settings.SMTP_USER,
+        "sender_email": sender_addr,
+        "smtp_use_tls": settings.SMTP_USE_TLS,
+        "smtp_configured": smtp_configured,
     }
 
 

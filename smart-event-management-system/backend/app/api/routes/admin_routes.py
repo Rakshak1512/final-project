@@ -276,7 +276,7 @@ def approve_faculty_account(
         type=NotificationType.general,
     )
 
-    # Email notification via Resend
+    # Email notification via Gmail SMTP
     if fac.email:
         try:
             fac_id = fac.admin_id or fac.registration_number or f"FAC-{fac.id}"
@@ -444,7 +444,7 @@ def approve_student_account(
         type=NotificationType.general,
     )
 
-    # Email notification via Resend
+    # Email notification via Gmail SMTP
     if student.email:
         try:
             send_student_approved_email(student.email, student.name, student.registration_number)
@@ -687,7 +687,7 @@ def approve_volunteer_account(
         type=NotificationType.general,
     )
 
-    # Resend Email Notification
+    # Email notification via Gmail SMTP
     if volunteer.email:
         try:
             vol_id = volunteer.registration_number or volunteer.admin_id or f"VOL-{volunteer.id}"

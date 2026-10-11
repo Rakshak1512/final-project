@@ -1,25 +1,25 @@
 """
-Unit and Integration Tests for Resend Email Authentication and OTP Workflows
+Unit and Integration Tests for Gmail SMTP Email Authentication and OTP Workflows
 """
 import unittest
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timezone, timedelta
+import smtplib
 
 from app.core.config import settings
 from app.services.email_service import (
     send_email_detailed,
     send_otp_email,
-    send_password_reset_email,
+    send_password_reset_otp_email,
     send_registration_confirmation_email,
     _mask_email,
 )
 from app.core.security import generate_otp, hash_otp, verify_otp_hash
 
 
-class TestResendEmailAuth(unittest.TestCase):
+class TestSMTPEmailAuth(unittest.TestCase):
 
     def test_mask_email_utility(self):
-        """Verifies emails are securely masked in logs."""
+        """Verifies emails are securely masked in logs without leaking user identity."""
         self.assertEqual(_mask_email(""), "***")
         self.assertEqual(_mask_email("invalid"), "***")
         self.assertEqual(_mask_email("ab@gmail.com"), "a*@gmail.com")
@@ -36,54 +36,59 @@ class TestResendEmailAuth(unittest.TestCase):
         self.assertTrue(verify_otp_hash(otp, hashed))
         self.assertFalse(verify_otp_hash("000000", hashed))
 
-    def test_missing_api_key_never_reports_success(self):
-        """Ensures that missing RESEND_API_KEY returns (False, error) and never simulates success."""
-        with patch.object(settings, "RESEND_API_KEY", ""):
+    def test_missing_credentials_never_reports_success(self):
+        """Ensures that missing SMTP_PASSWORD returns (False, error) and never simulates success."""
+        with patch.object(settings, "SMTP_PASSWORD", ""):
             ok, msg = send_email_detailed("test@college.edu", "Subject", "<p>Body</p>")
             self.assertFalse(ok)
-            self.assertIn("RESEND_API_KEY", msg)
+            self.assertIn("Gmail SMTP credentials not configured", msg)
 
-    @patch("requests.post")
-    def test_resend_http_api_success(self, mock_post):
-        """Verifies successful Resend delivery returns True."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"id": "resend_msg_12345"}
-        mock_post.return_value = mock_resp
+    @patch("smtplib.SMTP")
+    def test_smtp_starttls_success(self, mock_smtp_class):
+        """Verifies successful Gmail SMTP delivery via port 587 with STARTTLS."""
+        mock_server = MagicMock()
+        mock_smtp_class.return_value.__enter__.return_value = mock_server
 
-        with patch.object(settings, "RESEND_API_KEY", "re_test_key_123"):
+        with patch.object(settings, "SMTP_USER", "smart.event.system2026@gmail.com"), \
+             patch.object(settings, "SMTP_PASSWORD", "abcd efgh ijkl mnop"), \
+             patch.object(settings, "SMTP_HOST", "smtp.gmail.com"), \
+             patch.object(settings, "SMTP_PORT", 587), \
+             patch.object(settings, "SMTP_USE_TLS", True):
+
             ok, msg = send_email_detailed("user@college.edu", "Test Subject", "<p>Hello</p>")
             self.assertTrue(ok)
-            self.assertIn("Email delivered successfully via Resend", msg)
-            mock_post.assert_called_once()
-            args, kwargs = mock_post.call_args
-            self.assertEqual(args[0], "https://api.resend.com/emails")
-            self.assertEqual(kwargs["headers"]["Authorization"], "Bearer re_test_key_123")
-            self.assertEqual(kwargs["json"]["to"], ["user@college.edu"])
+            self.assertIn("Email delivered successfully via Gmail SMTP", msg)
 
-    @patch("requests.post")
-    def test_resend_http_api_failure_never_fakes_success(self, mock_post):
-        """Ensures that Resend API errors return False with the exact error details."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 403
-        mock_resp.json.return_value = {"message": "Domain not verified"}
-        mock_resp.text = '{"message": "Domain not verified"}'
-        mock_post.return_value = mock_resp
+            mock_smtp_class.assert_called_once_with("smtp.gmail.com", 587, timeout=15)
+            mock_server.starttls.assert_called_once()
+            mock_server.login.assert_called_once_with("smart.event.system2026@gmail.com", "abcdefghijklmnop")
+            mock_server.sendmail.assert_called_once()
 
-        with patch.object(settings, "RESEND_API_KEY", "re_test_key_123"):
+    @patch("smtplib.SMTP")
+    def test_smtp_auth_failure_never_fakes_success(self, mock_smtp_class):
+        """Ensures that SMTPAuthenticationError returns False with actionable error details."""
+        mock_server = MagicMock()
+        mock_server.login.side_effect = smtplib.SMTPAuthenticationError(535, b"Invalid Credentials")
+        mock_smtp_class.return_value.__enter__.return_value = mock_server
+
+        with patch.object(settings, "SMTP_USER", "smart.event.system2026@gmail.com"), \
+             patch.object(settings, "SMTP_PASSWORD", "wrongpassword1234"), \
+             patch.object(settings, "SMTP_HOST", "smtp.gmail.com"), \
+             patch.object(settings, "SMTP_PORT", 587):
+
             ok, msg = send_email_detailed("user@college.edu", "Test Subject", "<p>Hello</p>")
             self.assertFalse(ok)
-            self.assertIn("Domain not verified", msg)
+            self.assertIn("Gmail SMTP authentication failed", msg)
 
-    @patch("requests.post")
-    def test_registration_confirmation_returns_status(self, mock_post):
-        """Verifies send_registration_confirmation_email returns boolean status."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"id": "resend_confirm_999"}
-        mock_post.return_value = mock_resp
+    @patch("smtplib.SMTP")
+    def test_registration_confirmation_via_smtp(self, mock_smtp_class):
+        """Verifies send_registration_confirmation_email dispatches via SMTP."""
+        mock_server = MagicMock()
+        mock_smtp_class.return_value.__enter__.return_value = mock_server
 
-        with patch.object(settings, "RESEND_API_KEY", "re_test_key_123"):
+        with patch.object(settings, "SMTP_USER", "smart.event.system2026@gmail.com"), \
+             patch.object(settings, "SMTP_PASSWORD", "abcdefghijklmnop"):
+
             result = send_registration_confirmation_email(
                 to_email="student@college.edu",
                 name="John Doe",
@@ -94,7 +99,9 @@ class TestResendEmailAuth(unittest.TestCase):
                 venue="Main Auditorium",
             )
             self.assertTrue(result)
+            mock_server.sendmail.assert_called_once()
 
 
 if __name__ == "__main__":
     unittest.main()
+

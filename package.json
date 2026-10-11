@@ -1,0 +1,9 @@
+{
+  "name": "updated-event-sphere",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Smart Event Management System - Full Stack Vercel Deployment",
+  "scripts": {
+    "build": "cd smart-event-management-system/frontend && npm install && npm run build"
+  }
+}

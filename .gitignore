@@ -97,8 +97,7 @@ Thumbs.db
 .wrangler/
 
 
-# Cloudflare local development secrets
-.dev.vars
-**/.dev.vars
-.wrangler/
+# Scratch and local temporary test outputs
+scratch/
+**/scratch/
 

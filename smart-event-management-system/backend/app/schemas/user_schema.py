@@ -26,7 +26,7 @@ class UserCreate(BaseModel):
     designation: Optional[str] = Field(None, max_length=100)
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
-    confirm_password: str
+    confirm_password: Optional[str] = None
     role: RoleEnum = RoleEnum.student
 
     @field_validator("registration_number", "admin_id", "phone", "department", "semester", "course", "designation", mode="before")
@@ -45,7 +45,7 @@ class UserCreate(BaseModel):
     @field_validator("confirm_password")
     @classmethod
     def passwords_match(cls, v, info):
-        if "password" in info.data and v != info.data["password"]:
+        if v is not None and "password" in info.data and v != info.data["password"]:
             raise ValueError("Passwords do not match")
         return v
 

@@ -89,7 +89,16 @@ export default function Register() {
       if (typeof detail === "string") {
         msg = detail;
       } else if (Array.isArray(detail) && detail.length > 0) {
-        msg = detail.map((d) => (typeof d === "string" ? d : d.message || d.msg || JSON.stringify(d))).join(", ");
+        msg = detail
+          .map((d) => {
+            if (typeof d === "string") return d;
+            const fieldName = (d.field || (Array.isArray(d.loc) ? d.loc.join(".") : "") || "")
+              .replace(/^(body\.|query\.)/, "")
+              .replace(/_/g, " ");
+            const errMsg = d.message || d.msg || "Invalid value";
+            return fieldName ? `${fieldName}: ${errMsg}` : errMsg;
+          })
+          .join("; ");
       } else if (detail && typeof detail === "object") {
         msg = detail.message || detail.msg || JSON.stringify(detail);
       } else if (err.response?.data?.message) {

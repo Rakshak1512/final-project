@@ -6,7 +6,9 @@ from typing import List, Optional, Tuple
 from google.cloud import firestore
 from google.cloud.firestore import Transaction, transactional
 
+from app.core.config import settings
 from app.core.firebase import get_firestore_db, get_next_id
+from app.core.security import hash_otp
 from app.models.assignment import FacultyAssignment, TaskPriority, TaskStatus
 from app.models.audit_log import AuditLog
 from app.models.auth_tokens import EmailVerification, PasswordReset
@@ -1854,12 +1856,37 @@ def mark_email_verification_used(verification_id: int):
 
 
 def create_password_reset(user_id: int, otp_code: str, expires_at: datetime) -> PasswordReset:
+    """Create a new password reset request, invalidating any existing active OTPs for this user."""
     db = get_firestore_db()
+    # 1. Invalidate older OTPs when a new OTP is issued
+    try:
+        existing_resets = (
+            db.collection("password_resets")
+            .where("user_id", "==", int(user_id))
+            .where("is_used", "==", False)
+            .stream()
+        )
+        batch = db.batch()
+        count = 0
+        for doc in existing_resets:
+            batch.update(doc.reference, {"is_used": True})
+            count += 1
+        if count > 0:
+            batch.commit()
+    except Exception as e:
+        logger.warning("Could not invalidate previous password resets for user %s: %s", user_id, e)
+
     pr_id = get_next_id("password_resets")
+    hashed_val = hash_otp(otp_code)
+    max_att = getattr(settings, "OTP_MAX_ATTEMPTS", 5) or 5
+
     pr = PasswordReset(
         id=pr_id,
-        user_id=user_id,
-        otp_code=otp_code,
+        user_id=int(user_id),
+        otp_code="",  # Never store raw plaintext OTP in database
+        hashed_otp=hashed_val,
+        attempts=0,
+        max_attempts=max_att,
         expires_at=expires_at,
         is_used=False,
         created_at=datetime.now(timezone.utc),
@@ -1868,12 +1895,12 @@ def create_password_reset(user_id: int, otp_code: str, expires_at: datetime) -> 
     return pr
 
 
-def get_latest_password_reset(user_id: int, otp_code: str) -> Optional[PasswordReset]:
+def get_latest_password_reset_for_user(user_id: int) -> Optional[PasswordReset]:
+    """Retrieve the latest unused password reset document for a user."""
     db = get_firestore_db()
     docs = (
         db.collection("password_resets")
         .where("user_id", "==", int(user_id))
-        .where("otp_code", "==", str(otp_code).strip())
         .where("is_used", "==", False)
         .stream()
     )
@@ -1884,9 +1911,58 @@ def get_latest_password_reset(user_id: int, otp_code: str) -> Optional[PasswordR
     return resets[0]
 
 
+def get_recent_password_reset_request(user_id: int) -> Optional[PasswordReset]:
+    """Retrieve the most recent password reset request (used or unused) for cooldown enforcement."""
+    db = get_firestore_db()
+    docs = (
+        db.collection("password_resets")
+        .where("user_id", "==", int(user_id))
+        .stream()
+    )
+    resets = [PasswordReset.from_dict(d.to_dict()) for d in docs]
+    if not resets:
+        return None
+    resets.sort(key=lambda r: r.created_at, reverse=True)
+    return resets[0]
+
+
+def update_password_reset(reset_id: int, updates: dict):
+    """Update fields such as attempt count on a password reset document."""
+    db = get_firestore_db()
+    db.collection("password_resets").document(str(reset_id)).update(updates)
+
+
 def mark_password_reset_used(reset_id: int):
+    """Mark a password reset OTP as used and invalidated."""
     db = get_firestore_db()
     db.collection("password_resets").document(str(reset_id)).update({"is_used": True})
+
+
+def invalidate_all_password_resets(user_id: int):
+    """Invalidate all password reset OTPs for a user after successful password reset."""
+    db = get_firestore_db()
+    try:
+        active_resets = (
+            db.collection("password_resets")
+            .where("user_id", "==", int(user_id))
+            .where("is_used", "==", False)
+            .stream()
+        )
+        batch = db.batch()
+        count = 0
+        for doc in active_resets:
+            batch.update(doc.reference, {"is_used": True})
+            count += 1
+        if count > 0:
+            batch.commit()
+    except Exception as e:
+        logger.warning("Could not invalidate password resets for user %s: %s", user_id, e)
+
+
+def get_latest_password_reset(user_id: int, otp_code: str = "") -> Optional[PasswordReset]:
+    """Backward-compatible lookup for password reset verification."""
+    latest = get_latest_password_reset_for_user(user_id)
+    return latest
 
 
 # ============================================================

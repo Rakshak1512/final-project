@@ -69,63 +69,36 @@ export function AuthProvider({ children }) {
   }, []);
 
   const login = async ({ email, password, role, remember_me }) => {
-    if (firebaseConfigured) {
-      try {
-        const firebaseUser = await signInFirebaseUser(email, password);
-
-        if (!firebaseUser.emailVerified) {
-          throw new Error("Please verify your email first. Check your inbox for the Firebase verification link.");
-        }
-
-        const idToken = await firebaseUser.getIdToken(true);
-        const { data } = await api.post("/auth/firebase/session", {
-          id_token: idToken,
-          role,
-          remember_me,
-        });
-
-        persistSession(data);
-        setUser(data.user);
-        return data.user;
-      } catch (firebaseError) {
-        if (firebaseError?.message?.includes("verify your email first")) {
-          throw firebaseError;
-        }
-
-        // Existing EventSphere accounts may predate Firebase Authentication or Firebase may fail.
-        // Fall back to the backend API; a successful legacy login automatically
-        // provisions/synchronizes the Firebase account on the backend.
-        const code = firebaseError?.code || "";
-        const allowLegacyFallback = [
-          "auth/user-not-found",
-          "auth/invalid-credential",
-          "auth/invalid-login-credentials",
-          "auth/operation-not-allowed",
-          "auth/network-request-failed",
-        ].includes(code) || !code;
-
-        if (!allowLegacyFallback) throw firebaseError;
-      }
-    }
-
-    // Direct backend authentication via FastAPI JWT
+    // 1. Authoritative EventSphere backend authentication (enforces email verification, roles, approvals)
     const { data } = await api.post("/auth/login", {
-      email,
+      email: email.trim().toLowerCase(),
       password,
       role,
       remember_me,
     });
+
     persistSession(data);
     setUser(data.user);
+
+    // 2. Synchronize Firebase Authentication client session if configured
+    if (firebaseConfigured) {
+      try {
+        await signInFirebaseUser(email, password);
+      } catch {
+        // Firebase client state sync is non-blocking for authorized JWT session
+      }
+    }
+
     return data.user;
   };
 
   const register = async (payload) => {
-    // Direct backend registration sending Resend Email OTP
+    // Direct backend registration sending Gmail SMTP OTP
     const { data } = await api.post("/auth/register", {
       name: payload.name,
       email: payload.email,
       password: payload.password,
+      confirm_password: payload.confirm_password || payload.password,
       role: payload.role,
       registration_number: payload.registration_number,
       admin_id: payload.admin_id,

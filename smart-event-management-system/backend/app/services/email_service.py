@@ -1,25 +1,24 @@
 """
-Email Service for transactional emails via Resend HTTP API and SMTP.
+Email Service for transactional emails exclusively via Gmail SMTP (smtplib).
 
-Configured via environment variables:
-- RESEND_API_KEY (Recommended for cloud/production)
-- RESEND_FROM_EMAIL
-- SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM_NAME, SMTP_FROM_EMAIL, SMTP_USE_TLS
+Configured via environment variables in backend .env:
+- SMTP_HOST: smtp.gmail.com (default)
+- SMTP_PORT: 587 (default)
+- SMTP_USER: smart.event.system2026@gmail.com
+- SMTP_PASSWORD: 16-character Google App Password
+- SMTP_FROM_NAME: EventSphere
+- SMTP_FROM_EMAIL: smart.event.system2026@gmail.com
+- SMTP_USE_TLS: True (STARTTLS)
 """
 from datetime import datetime
 import logging
 import smtplib
-import requests
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
 from typing import Optional, Tuple
 
-import requests
-
 from app.core.config import settings
-
-import time
 
 logger = logging.getLogger("app.email")
 
@@ -36,94 +35,25 @@ def _mask_email(email: str) -> str:
     return f"{masked_local}@{domain}"
 
 
-def _send_via_resend(
-    to_addr: str, subject: str, html_body: str, text_body: Optional[str] = None
-) -> Tuple[bool, str]:
-    """Send an email using Resend REST API with retry handling and secure error reporting."""
-    api_key = (settings.RESEND_API_KEY or "").strip()
-    if not api_key:
-        return False, "RESEND_API_KEY is not configured on the server."
-
-    masked_to = _mask_email(to_addr)
-    from_name = (settings.SMTP_FROM_NAME or settings.APP_NAME or "EventSphere").strip()
-    from_email = (settings.RESEND_FROM_EMAIL or "onboarding@resend.dev").strip()
-    sender = f"{from_name} <{from_email}>"
-
-    payload = {
-        "from": sender,
-        "to": [to_addr],
-        "subject": subject,
-        "html": html_body,
-    }
-    if text_body:
-        payload["text"] = text_body
-
-    max_retries = 2
-    for attempt in range(max_retries):
-        try:
-            response = requests.post(
-                "https://api.resend.com/emails",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=12,
-            )
-            if response.status_code in (200, 201):
-                msg_id = ""
-                try:
-                    msg_id = response.json().get("id", "")
-                except Exception:
-                    pass
-                logger.info("[EMAIL] [RESEND] Successfully delivered email to %s (id: %s)", masked_to, msg_id)
-                return True, "Email delivered successfully via Resend"
-
-            err_detail = ""
-            try:
-                res_json = response.json()
-                err_detail = res_json.get("message") or res_json.get("error") or ""
-            except Exception:
-                pass
-            if not err_detail:
-                err_detail = response.text[:200]
-
-            logger.error(
-                "[EMAIL] [RESEND] API error (HTTP %s) for %s (attempt %d): %s",
-                response.status_code,
-                masked_to,
-                attempt + 1,
-                err_detail,
-            )
-
-            if response.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
-                time.sleep(0.5)
-                continue
-            return False, f"Resend API error (HTTP {response.status_code}): {err_detail}"
-        except Exception as e:
-            logger.error("[EMAIL] [RESEND] Connection failed for %s (attempt %d): %s", masked_to, attempt + 1, str(e))
-            if attempt < max_retries - 1:
-                time.sleep(0.5)
-                continue
-            return False, f"Network error connecting to Resend: {str(e)}"
-
-    return False, "Unable to deliver email via Resend after retries."
-
-
 def _send_via_smtp(
     to_addr: str, subject: str, html_body: str, text_body: Optional[str] = None
 ) -> Tuple[bool, str]:
-    """Send an email using standard SMTP (legacy fallback)."""
+    """
+    Send an email using Gmail SMTP via smtplib with STARTTLS on port 587.
+    Returns (success: bool, detail: str).
+    Never simulates successful delivery.
+    """
     masked_to = _mask_email(to_addr)
     host = settings.SMTP_HOST.strip() if settings.SMTP_HOST else "smtp.gmail.com"
-    port = settings.SMTP_PORT or 587
-    user = settings.SMTP_USER.strip() if settings.SMTP_USER else ""
+    port = int(settings.SMTP_PORT) if settings.SMTP_PORT else 587
+    user = (settings.SMTP_USER or "smart.event.system2026@gmail.com").strip()
     password = (settings.SMTP_PASSWORD or "").strip().replace(" ", "")
     from_name = (settings.SMTP_FROM_NAME or settings.APP_NAME or "EventSphere").strip()
     from_email = (settings.SMTP_FROM_EMAIL or user or "smart.event.system2026@gmail.com").strip()
 
-    if not host or not user or not password:
-        return False, "SMTP credentials incomplete (host/user/password empty)."
+    if not user or not password:
+        logger.error("[EMAIL] [SMTP] Credentials missing in backend .env for %s", masked_to)
+        return False, "Gmail SMTP credentials not configured (SMTP_USER or SMTP_PASSWORD is empty in backend .env)."
 
     sender_header = formataddr((from_name, from_email))
     msg = MIMEMultipart("alternative")
@@ -136,15 +66,15 @@ def _send_via_smtp(
     if html_body:
         msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-    logger.info("[EMAIL] [SMTP] Connecting to %s:%s for %s", host, port, masked_to)
+    logger.info("[EMAIL] [SMTP] Connecting to Gmail SMTP %s:%s for %s", host, port, masked_to)
 
     try:
         if port == 465:
-            with smtplib.SMTP_SSL(host, port, timeout=12) as server:
+            with smtplib.SMTP_SSL(host, port, timeout=15) as server:
                 server.login(user, password)
                 server.sendmail(from_email, [to_addr], msg.as_string())
         else:
-            with smtplib.SMTP(host, port, timeout=12) as server:
+            with smtplib.SMTP(host, port, timeout=15) as server:
                 server.ehlo()
                 if settings.SMTP_USE_TLS:
                     server.starttls()
@@ -152,45 +82,39 @@ def _send_via_smtp(
                 server.login(user, password)
                 server.sendmail(from_email, [to_addr], msg.as_string())
 
-        logger.info("[EMAIL] [SMTP] Email delivered successfully to %s", masked_to)
-        return True, "Email delivered successfully via SMTP"
+        logger.info("[EMAIL] [SMTP] Email successfully delivered to %s via Gmail SMTP (%s:%d)", masked_to, host, port)
+        return True, "Email delivered successfully via Gmail SMTP"
     except smtplib.SMTPAuthenticationError as e:
-        logger.error("[EMAIL] [SMTP] Authentication failed for %s (code %s)", masked_to, getattr(e, "smtp_code", 535))
-        return False, "SMTP authentication failed. Please verify credentials."
+        err_code = getattr(e, "smtp_code", 535)
+        logger.error("[EMAIL] [SMTP] Authentication failed for %s (code %s): %s", masked_to, err_code, str(e))
+        return False, "Gmail SMTP authentication failed. Please verify that your 16-character Google App Password is set correctly in backend .env."
+    except smtplib.SMTPServerDisconnected as e:
+        logger.error("[EMAIL] [SMTP] Connection disconnected during SMTP delivery to %s: %s", masked_to, str(e))
+        return False, "Gmail SMTP authentication failed. Google rejected the credentials (535 Bad Credentials). Please verify your 16-character Google App Password in backend .env."
+    except (smtplib.SMTPConnectError, TimeoutError, OSError) as e:
+        logger.error("[EMAIL] [SMTP] Connection failed to %s:%s for %s: %s", host, port, masked_to, str(e))
+        return False, f"Could not connect to Gmail SMTP server ({host}:{port}): {str(e)}"
     except Exception as e:
-        logger.error("[EMAIL] [SMTP] Error for %s: %s", masked_to, str(e))
-        return False, f"SMTP delivery failed: {str(e)}"
+        logger.error("[EMAIL] [SMTP] Delivery failed for %s: %s", masked_to, str(e))
+        return False, f"Gmail SMTP delivery failed: {str(e)}"
 
 
 def send_email_detailed(
     to_email: str, subject: str, html_body: str, text_body: Optional[str] = None
 ) -> Tuple[bool, str]:
     """
-    Primary email dispatch function using Resend HTTP API.
-    Never simulates fake successful delivery when Resend fails.
+    Primary email dispatch function using Gmail SMTP (smtplib).
+    Never simulates fake successful delivery when SMTP fails or is unconfigured.
     """
     to_addr = (to_email or "").strip()
     if not to_addr:
         return False, "Recipient email address is required."
 
-    masked_to = _mask_email(to_addr)
-    has_resend = bool((settings.RESEND_API_KEY or "").strip())
-
-    if has_resend:
-        ok, detail = _send_via_resend(to_addr, subject, html_body, text_body)
-        if ok:
-            return True, detail
-        logger.error("[EMAIL] [RESEND] Delivery failed for %s: %s", masked_to, detail)
-        return False, detail
-
-    err_msg = "RESEND_API_KEY is not configured on the backend server."
-    logger.error("[EMAIL] [RESEND_NOT_CONFIGURED] %s (Target: %s)", err_msg, masked_to)
-    return False, err_msg
-
+    return _send_via_smtp(to_addr, subject, html_body, text_body)
 
 
 def send_email(to_email: str, subject: str, html_body: str, text_body: Optional[str] = None) -> bool:
-    """Send an email and return boolean status."""
+    """Send an email via Gmail SMTP and return boolean status."""
     success, _ = send_email_detailed(to_email, subject, html_body, text_body)
     return success
 
@@ -202,7 +126,7 @@ def send_otp_email(
     expiry_minutes: Optional[int] = None,
 ) -> Tuple[bool, str]:
     """
-    Send a 6-digit OTP verification email via Resend.
+    Send a 6-digit OTP verification email via Gmail SMTP.
     Returns (success: bool, message_or_error: str).
     """
     exp_mins = expiry_minutes or settings.OTP_EXPIRE_MINUTES or 5
@@ -290,11 +214,13 @@ def send_verification_email(to_email: str, name: str, otp_code: str) -> bool:
     return success
 
 
-def send_password_reset_email(to_email: str, name: str, otp_code: str) -> bool:
-    """Send password verification 6-digit OTP email via SMTP (Email OTP only, no links)."""
-    exp_mins = settings.OTP_EXPIRE_MINUTES or 10
+def send_password_reset_otp_email(
+    to_email: str, name: str, otp_code: str, expiry_minutes: Optional[int] = None
+) -> Tuple[bool, str]:
+    """Send 6-digit password reset OTP email via Gmail SMTP."""
+    exp_mins = expiry_minutes or settings.OTP_EXPIRE_MINUTES or 5
     user_name = name or "User"
-    subject = f"{settings.APP_NAME} - Password Verification OTP"
+    subject = f"{settings.APP_NAME} - Password Reset OTP"
 
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -310,31 +236,48 @@ def send_password_reset_email(to_email: str, name: str, otp_code: str) -> bool:
       <p style="margin: 4px 0 0; color: rgba(255,255,255,0.9); font-size: 13px;">Smart Event Management System</p>
     </div>
     <div style="padding: 30px 24px;">
-      <h2 style="margin: 0 0 12px; font-size: 19px; color: #f8fafc;">EventSphere Password Verification</h2>
+      <h2 style="margin: 0 0 12px; font-size: 19px; color: #f8fafc;">Password Reset OTP</h2>
       <p style="margin: 0 0 18px; font-size: 14px; color: #94a3b8;">
-        Hi {user_name}, we received a request to change your password. Your password-change OTP is:
+        Hello <strong style="color: #f1f5f9;">{user_name}</strong>,<br><br>
+        We received a request to reset your EventSphere account password. Your 6-digit verification OTP is:
       </p>
-      <div style="background: rgba(99, 102, 241, 0.1); border: 1.5px dashed #818cf8; border-radius: 12px; padding: 18px; text-align: center; margin: 20px 0;">
-        <span style="font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #a5b4fc; font-family: monospace;">
+      <div style="background: rgba(99, 102, 241, 0.1); border: 1.5px dashed #818cf8; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
+        <span style="font-size: 36px; font-weight: 800; letter-spacing: 10px; color: #a5b4fc; font-family: monospace; display: inline-block; padding-left: 10px;">
           {otp_code}
         </span>
       </div>
-      <p style="margin: 0 0 12px; font-size: 13px; color: #cbd5e1;">⏱️ This OTP expires in {exp_mins} minutes.</p>
-      <p style="margin: 0; font-size: 12px; color: #64748b;">Do not share this OTP with anyone. If you did not request a password change, you can safely ignore this email.</p>
+      <div style="background: #0f172a; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px;">
+        <p style="margin: 0; font-size: 13px; color: #cbd5e1;">⏱️ This OTP expires in <strong>{exp_mins} minutes</strong>.</p>
+      </div>
+      <p style="margin: 0 0 8px; font-size: 13px; font-weight: 600; color: #f43f5e;">
+        Do not share this OTP with anyone.
+      </p>
+      <p style="margin: 16px 0 0; font-size: 12.5px; color: #64748b;">
+        If you did not request a password reset, you can safely ignore this email.
+      </p>
     </div>
   </div>
-</body>
+ </body>
 </html>"""
 
     text_content = (
-        f"EventSphere Password Verification\n\n"
-        f"Your password-change OTP is:\n\n"
+        f"EventSphere Password Reset OTP\n\n"
+        f"Hello {user_name},\n\n"
+        f"Your 6-digit password reset OTP is:\n\n"
         f"{otp_code}\n\n"
         f"This OTP expires in {exp_mins} minutes.\n\n"
-        f"Do not share this OTP with anyone."
+        f"Do not share this OTP with anyone.\n\n"
+        f"Regards,\n"
+        f"EventSphere Team"
     )
 
-    return send_email(to_email, subject, html_content, text_content)
+    return send_email_detailed(to_email, subject, html_content, text_content)
+
+
+def send_password_reset_email(to_email: str, name: str, otp_code: str) -> bool:
+    """Send password verification 6-digit OTP email via Gmail SMTP (backward-compatible bool return)."""
+    ok, _ = send_password_reset_otp_email(to_email, name, otp_code)
+    return ok
 
 
 def send_registration_confirmation_email(
@@ -666,7 +609,7 @@ def send_account_pending_approval_email(to_email: str, name: str, role: str) -> 
 
 
 def send_student_approved_email(to_email: str, name: str, uucms_id: Optional[str] = None) -> bool:
-    """Send student account approval notification email via Resend."""
+    """Send student account approval notification email via Gmail SMTP."""
     subject = "Your EventSphere student account has been approved."
     login_url = f"{settings.FRONTEND_URL}/login"
     dashboard_url = f"{settings.FRONTEND_URL}/student/dashboard"
@@ -736,7 +679,7 @@ def send_student_approved_email(to_email: str, name: str, uucms_id: Optional[str
 
 
 def send_student_rejected_email(to_email: str, name: str, reason: Optional[str] = None) -> bool:
-    """Send student account rejection notification email via Resend."""
+    """Send student account rejection notification email via Gmail SMTP."""
     subject = "Update Regarding Your EventSphere Student Account"
     reason_txt = reason or "Verification details could not be validated against official institutional records."
 
@@ -791,7 +734,7 @@ def send_student_rejected_email(to_email: str, name: str, reason: Optional[str] 
 
 
 def send_faculty_approved_email(to_email: str, name: str, faculty_id: Optional[str] = None) -> bool:
-    """Send faculty account approval notification email via Resend."""
+    """Send faculty account approval notification email via Gmail SMTP."""
     subject = "Your EventSphere faculty account has been approved."
     login_url = f"{settings.FRONTEND_URL}/login"
     dashboard_url = f"{settings.FRONTEND_URL}/faculty/dashboard"
@@ -861,7 +804,7 @@ def send_faculty_approved_email(to_email: str, name: str, faculty_id: Optional[s
 
 
 def send_faculty_rejected_email(to_email: str, name: str, reason: Optional[str] = None) -> bool:
-    """Send faculty account rejection notification email via Resend."""
+    """Send faculty account rejection notification email via Gmail SMTP."""
     subject = "Update Regarding Your EventSphere Faculty Account"
     reason_txt = reason or "Faculty institutional credentials could not be verified by the System Administrator."
 
@@ -944,7 +887,7 @@ def send_admin_new_faculty_alert_email(admin_email: str, faculty_name: str, facu
 
 
 def send_volunteer_approved_email(to_email: str, name: str, volunteer_id: Optional[str] = None) -> bool:
-    """Send volunteer account approval notification email via Resend."""
+    """Send volunteer account approval notification email via Gmail SMTP."""
     subject = "Your EventSphere volunteer account has been approved."
     login_url = f"{settings.FRONTEND_URL}/login"
     dashboard_url = f"{settings.FRONTEND_URL}/volunteer/dashboard"
@@ -1014,7 +957,7 @@ def send_volunteer_approved_email(to_email: str, name: str, volunteer_id: Option
 
 
 def send_volunteer_rejected_email(to_email: str, name: str, reason: Optional[str] = None) -> bool:
-    """Send volunteer account rejection notification email via Resend."""
+    """Send volunteer account rejection notification email via Gmail SMTP."""
     subject = "EventSphere Volunteer Account Update"
     reason_txt = reason or "Volunteer credentials could not be validated by institutional coordinators."
 

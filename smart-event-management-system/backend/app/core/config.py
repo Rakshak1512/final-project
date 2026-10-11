@@ -44,25 +44,25 @@ class Settings(BaseSettings):
     # Option 3: Local Firestore Emulator (e.g. "localhost:8080")
     FIRESTORE_EMULATOR_HOST: str = ""
 
-    # Email Provider (Resend API)
+    # Email Provider (Exclusively Gmail SMTP via smtplib STARTTLS)
+    EMAIL_PROVIDER: str = "smtp"
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = "smart.event.system2026@gmail.com"
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_NAME: str = "EventSphere"
+    SMTP_FROM_EMAIL: str = "smart.event.system2026@gmail.com"
+    SMTP_USE_TLS: bool = True
+
+    # Deprecated email settings (retained for backward compatibility)
     RESEND_API_KEY: str = ""
-    RESEND_FROM_EMAIL: str = "onboarding@resend.dev"
-    EMAIL_PROVIDER: str = "resend"
+    RESEND_FROM_EMAIL: str = ""
 
     # AI Chatbot Configuration
     AI_PROVIDER: str = "gemini"
     AI_MODEL: str = "gemini-1.5-flash"
     GEMINI_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
-
-    # Legacy SMTP fallback (if configured)
-    SMTP_HOST: str = ""
-    SMTP_PORT: int = 587
-    SMTP_USER: str = ""
-    SMTP_PASSWORD: str = ""
-    SMTP_FROM_NAME: str = "EventSphere"
-    SMTP_FROM_EMAIL: str = ""
-    SMTP_USE_TLS: bool = True
 
     # OTP
     OTP_EXPIRE_MINUTES: int = 5
@@ -85,6 +85,8 @@ class Settings(BaseSettings):
 
     @property
     def upload_dir_abs(self) -> str:
+        if os.environ.get("VERCEL"):
+            return "/tmp/uploads"
         if os.path.isabs(self.UPLOAD_DIR):
             return self.UPLOAD_DIR
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
