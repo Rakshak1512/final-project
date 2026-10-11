@@ -18,30 +18,7 @@ for _p in _possible_backend_paths:
         sys.path.insert(0, _abs_p)
         break
 
-from app.main import app as fastapi_app
-
-
-class VercelPathMiddleware:
-    """
-    Middleware that recovers the original request path on Vercel deployments.
-    When Vercel rewrites /api/(.*) -> /api/index.py, the ASGI path becomes '/api/index.py'
-    while the actual client URL is passed in headers like 'x-matched-path' or 'x-now-route-matches'.
-    """
-    def __init__(self, inner_app):
-        self.inner_app = inner_app
-
-    async def __call__(self, scope, receive, send):
-        if scope.get("type") == "http":
-            headers = dict(scope.get("headers", []))
-            matched = headers.get(b"x-matched-path")
-            if matched:
-                path_str = matched.decode("utf-8").split("?", 1)[0]
-                scope["path"] = path_str
-                scope["raw_path"] = path_str.encode("utf-8")
-        await self.inner_app(scope, receive, send)
-
-
-app = VercelPathMiddleware(fastapi_app)
+from app.main import app
 
 try:
     from mangum import Mangum

@@ -55,6 +55,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def vercel_path_rewrite_middleware(request: Request, call_next):
+    matched = request.headers.get("x-matched-path")
+    if matched:
+        request.scope["path"] = matched.split("?", 1)[0]
+    return await call_next(request)
+
 try:
     os.makedirs(settings.upload_dir_abs, exist_ok=True)
     for sub in ("profile_pictures", "event_posters", "certificates", "qrcodes"):
