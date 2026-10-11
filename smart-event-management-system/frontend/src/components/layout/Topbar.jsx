@@ -35,9 +35,11 @@ export default function Topbar({ onMenuClick, basePath, onSearch, showSearch = t
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const searchContainerRef = useRef(null);
   const debounceTimerRef = useRef(null);
+  const latestQueryRef = useRef("");
   const mobileInputRef = useRef(null);
 
   useEffect(() => {
@@ -69,7 +71,7 @@ export default function Topbar({ onMenuClick, basePath, onSearch, showSearch = t
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // Debounced global search execution
+  // Debounced global search execution with race condition prevention
   const handleSearchChange = (val) => {
     setQuery(val);
     if (onSearch) onSearch(val);
@@ -79,6 +81,9 @@ export default function Topbar({ onMenuClick, basePath, onSearch, showSearch = t
     }
 
     const trimmed = val.trim();
+    latestQueryRef.current = trimmed;
+    setSelectedIndex(-1);
+
     if (!trimmed) {
       setSearchResults([]);
       setSearchOpen(false);
@@ -92,20 +97,27 @@ export default function Topbar({ onMenuClick, basePath, onSearch, showSearch = t
     debounceTimerRef.current = setTimeout(async () => {
       try {
         const { data } = await searchService.global(trimmed);
-        setSearchResults(data?.results || []);
+        if (latestQueryRef.current === trimmed) {
+          setSearchResults(data?.results || []);
+        }
       } catch (err) {
         console.error("Global search error:", err);
-        setSearchResults([]);
+        if (latestQueryRef.current === trimmed) {
+          setSearchResults([]);
+        }
       } finally {
-        setSearching(false);
+        if (latestQueryRef.current === trimmed) {
+          setSearching(false);
+        }
       }
-    }, 250);
+    }, 220);
   };
 
   const handleSelectResult = (item) => {
     setSearchOpen(false);
     setMobileSearchOpen(false);
     setQuery("");
+    setSelectedIndex(-1);
     if (item.link) {
       navigate(item.link);
     }
@@ -115,6 +127,8 @@ export default function Topbar({ onMenuClick, basePath, onSearch, showSearch = t
     setQuery("");
     setSearchResults([]);
     setSearchOpen(false);
+    setSelectedIndex(-1);
+    latestQueryRef.current = "";
     if (onSearch) onSearch("");
   };
 
@@ -122,9 +136,19 @@ export default function Topbar({ onMenuClick, basePath, onSearch, showSearch = t
     if (e.key === "Escape") {
       setSearchOpen(false);
       setMobileSearchOpen(false);
+      setSelectedIndex(-1);
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelectedIndex((prev) => (prev < searchResults.length - 1 ? prev + 1 : 0));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelectedIndex((prev) => (prev > 0 ? prev - 1 : searchResults.length - 1));
     } else if (e.key === "Enter" && searchResults.length > 0) {
       e.preventDefault();
-      handleSelectResult(searchResults[0]);
+      const target = selectedIndex >= 0 && selectedIndex < searchResults.length
+        ? searchResults[selectedIndex]
+        : searchResults[0];
+      handleSelectResult(target);
     }
   };
 
@@ -341,14 +365,20 @@ export default function Topbar({ onMenuClick, basePath, onSearch, showSearch = t
                           justifyContent: "space-between",
                           gap: 12,
                           cursor: "pointer",
+                          background: idx === selectedIndex ? "rgba(139, 92, 246, 0.15)" : "transparent",
                           transition: "background 0.15s ease",
                           borderBottom:
                             idx < searchResults.length - 1
                               ? "1px solid rgba(255, 255, 255, 0.04)"
                               : "none",
                         }}
-                        onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-glass)")}
-                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                        onMouseEnter={(e) => {
+                          setSelectedIndex(idx);
+                          e.currentTarget.style.background = "rgba(139, 92, 246, 0.15)";
+                        }}
+                        onMouseLeave={(e) => {
+                          if (selectedIndex !== idx) e.currentTarget.style.background = "transparent";
+                        }}
                       >
                         <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
                           <div

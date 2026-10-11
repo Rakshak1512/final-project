@@ -16,7 +16,7 @@ export const API_BASE_URL = (() => {
     return "/api";
   }
 
-  // When accessed via external URL / Cloudflare Tunnel / Cloudflare Pages / Render
+  // When accessed via external URL or production domain
   if (raw) {
     if (raw.includes("localhost") || raw.includes("127.0.0.1")) {
       return "/api";

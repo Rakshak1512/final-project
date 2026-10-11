@@ -171,46 +171,55 @@ The backend contains idempotent demo accounts for testing all four roles. They a
 
 These are demo credentials only. Change or remove them before exposing a production system to real users.
 
-For Render, `render.yaml` enables `SEED_TEST_USERS=true` so the demo accounts are available after deployment.
+Set `SEED_TEST_USERS=true` in `backend/.env` if you want demo test accounts provisioned on startup.
 
-## 10. Production Deployment Notes
+## 10. Email & AI Provider Configuration
 
-### Frontend (Vercel or Render Static Site)
-Set:
+### Email Authentication (Resend HTTP API)
+EventSphere uses the **Resend HTTP API** as the primary email provider for:
+- 6-digit registration OTP verification
+- Password-reset OTP notifications
+- Institutional account approval & rejection alerts
+- Event registration confirmation passes
+- Certificate issuance notices
 
+In `backend/.env`:
 ```env
-VITE_API_URL=https://<your-render-backend>.onrender.com
+RESEND_API_KEY=re_your_api_key_here
+RESEND_FROM_EMAIL=onboarding@resend.dev  # Or your verified custom sending domain
+EMAIL_PROVIDER=resend
 ```
 
-### Backend (Render)
-Set the production values in Render Environment Variables:
-
+### AI Chatbot (Google Gemini & OpenAI)
+EventSphere features a database-grounded AI Assistant. In `backend/.env`:
 ```env
-APP_ENV=production
-DEBUG=False
-FRONTEND_URL=https://<your-frontend-domain>
-CORS_ORIGINS=https://<your-frontend-domain>
-FIREBASE_PROJECT_ID=<your-project>
-FIREBASE_CLIENT_EMAIL=<your-service-account-email>
-FIREBASE_PRIVATE_KEY=<your-private-key>
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=<your-gmail-address>
-SMTP_PASSWORD=<your-gmail-app-password>
-SMTP_FROM_EMAIL=<your-gmail-address>
+AI_PROVIDER=gemini
+AI_MODEL=gemini-1.5-flash
+GEMINI_API_KEY=your_gemini_api_key_here
+# Alternative:
+# OPENAI_API_KEY=your_openai_api_key_here
 ```
+If an AI API key is not configured, EventSphere gracefully operates via its authoritative internal database query engine without breaking.
 
-Never commit `.env`, Firebase service-account JSON, private keys, API keys, SMTP passwords, or JWT secrets.
+## 11. Running Locally
 
-### OTP Production Flow
-
-Registration and password-reset OTPs are generated on the backend and sent through the configured SMTP server. The OTP is not returned to the frontend. Login also supports email OTP through the backend.
-
-A deployment smoke check is available at:
-
+### Backend
+```bash
+cd smart-event-management-system/backend
+python -m venv venv
+venv\Scripts\activate          # Linux/macOS: source venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
-GET /api/health
-GET /api/health/email
-```
+- API Docs: http://localhost:8000/docs
+- Health Check: http://localhost:8000/api/health
 
-`/api/health/email` reports only whether SMTP is configured; it never exposes credentials.
+### Frontend
+```bash
+cd smart-event-management-system/frontend
+npm install
+npm run dev
+```
+- App: http://localhost:5173
+
+Never commit `.env`, Firebase service-account JSON, private keys, API keys, or JWT secrets to Git.

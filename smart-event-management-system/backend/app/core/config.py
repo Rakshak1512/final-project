@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     RESEND_FROM_EMAIL: str = "onboarding@resend.dev"
     EMAIL_PROVIDER: str = "resend"
 
+    # AI Chatbot Configuration
+    AI_PROVIDER: str = "gemini"
+    AI_MODEL: str = "gemini-1.5-flash"
+    GEMINI_API_KEY: str = ""
+    OPENAI_API_KEY: str = ""
+
     # Legacy SMTP fallback (if configured)
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587

@@ -42,7 +42,7 @@ def _send_via_resend(
     """Send an email using Resend REST API with retry handling and secure error reporting."""
     api_key = (settings.RESEND_API_KEY or "").strip()
     if not api_key:
-        return False, "RESEND_API_KEY not configured"
+        return False, "RESEND_API_KEY is not configured on the server."
 
     masked_to = _mask_email(to_addr)
     from_name = (settings.SMTP_FROM_NAME or settings.APP_NAME or "EventSphere").strip()
@@ -79,27 +79,41 @@ def _send_via_resend(
                 logger.info("[EMAIL] [RESEND] Successfully delivered email to %s (id: %s)", masked_to, msg_id)
                 return True, "Email delivered successfully via Resend"
 
-            err_msg = response.text[:200]
-            logger.error("[EMAIL] [RESEND] API error (HTTP %s) for %s (attempt %d): %s", response.status_code, masked_to, attempt + 1, err_msg)
+            err_detail = ""
+            try:
+                res_json = response.json()
+                err_detail = res_json.get("message") or res_json.get("error") or ""
+            except Exception:
+                pass
+            if not err_detail:
+                err_detail = response.text[:200]
+
+            logger.error(
+                "[EMAIL] [RESEND] API error (HTTP %s) for %s (attempt %d): %s",
+                response.status_code,
+                masked_to,
+                attempt + 1,
+                err_detail,
+            )
 
             if response.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
                 time.sleep(0.5)
                 continue
-            return False, "Unable to send verification email. Please try again later."
+            return False, f"Resend API error (HTTP {response.status_code}): {err_detail}"
         except Exception as e:
             logger.error("[EMAIL] [RESEND] Connection failed for %s (attempt %d): %s", masked_to, attempt + 1, str(e))
             if attempt < max_retries - 1:
                 time.sleep(0.5)
                 continue
-            return False, "Unable to send verification email. Please try again later."
+            return False, f"Network error connecting to Resend: {str(e)}"
 
-    return False, "Unable to send verification email. Please try again later."
+    return False, "Unable to deliver email via Resend after retries."
 
 
 def _send_via_smtp(
     to_addr: str, subject: str, html_body: str, text_body: Optional[str] = None
 ) -> Tuple[bool, str]:
-    """Send an email using standard SMTP."""
+    """Send an email using standard SMTP (legacy fallback)."""
     masked_to = _mask_email(to_addr)
     host = settings.SMTP_HOST.strip() if settings.SMTP_HOST else "smtp.gmail.com"
     port = settings.SMTP_PORT or 587
@@ -152,10 +166,8 @@ def send_email_detailed(
     to_email: str, subject: str, html_body: str, text_body: Optional[str] = None
 ) -> Tuple[bool, str]:
     """
-    Primary email dispatch function.
-    Automatically prioritizes Resend if configured.
-    When Resend is configured, SMTP/Gmail is NOT used for authentication or account emails.
-    In development/debug environments, gracefully falls back without blocking user registration.
+    Primary email dispatch function using Resend HTTP API.
+    Never simulates fake successful delivery when Resend fails.
     """
     to_addr = (to_email or "").strip()
     if not to_addr:
@@ -163,37 +175,16 @@ def send_email_detailed(
 
     masked_to = _mask_email(to_addr)
     has_resend = bool((settings.RESEND_API_KEY or "").strip())
-    has_smtp = bool(settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD)
 
-    # 1. Primary path: Resend API
     if has_resend:
         ok, detail = _send_via_resend(to_addr, subject, html_body, text_body)
         if ok:
             return True, detail
         logger.error("[EMAIL] [RESEND] Delivery failed for %s: %s", masked_to, detail)
-        # Development fallback only
-        if settings.APP_ENV != "production" or settings.DEBUG:
-            logger.info(
-                "[EMAIL] [DEV_FALLBACK] Email delivery to %s simulated via Resend (Subject: %s). Running in %s mode.",
-                masked_to,
-                subject,
-                settings.APP_ENV,
-            )
-            return True, "Email delivery recorded (development mode)"
-        return False, "Unable to send verification email. Please try again later."
+        return False, detail
 
-    # 2. Development / Localhost Fallback (when RESEND_API_KEY is not set)
-    if settings.APP_ENV != "production" or settings.DEBUG:
-        logger.info(
-            "[EMAIL] [DEV_FALLBACK] Email delivery to %s simulated via Resend (Subject: %s). Running in %s mode.",
-            masked_to,
-            subject,
-            settings.APP_ENV,
-        )
-        return True, "Email delivery recorded (development mode)"
-
-    err_msg = "Unable to send verification email. RESEND_API_KEY is not configured."
-    logger.error("[EMAIL] [RESEND_NOT_CONFIGURED] %s", err_msg)
+    err_msg = "RESEND_API_KEY is not configured on the backend server."
+    logger.error("[EMAIL] [RESEND_NOT_CONFIGURED] %s (Target: %s)", err_msg, masked_to)
     return False, err_msg
 
 
@@ -393,6 +384,9 @@ def send_registration_confirmation_email(
 </body>
 </html>"""
     text = f"Registration Confirmed for {event_title}\nTicket: #{ticket_code}\nDate: {date_val}\nTime: {time_val}\nVenue: {venue_val}"
+    return send_email(to_email, subject, html, text)
+
+
 def send_registration_approved_email(
     to_email: str,
     name: str,

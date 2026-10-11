@@ -102,7 +102,7 @@ def init_firebase() -> Client:
                 "Initializing Firebase with environment variables"
             )
 
-            # Convert literal \n characters from Render into
+            # Convert literal \n characters from environment variables into
             # actual newline characters required by PEM format.
             private_key = settings.FIREBASE_PRIVATE_KEY.replace(
                 "\\n",
@@ -144,9 +144,7 @@ def init_firebase() -> Client:
                     e,
                 )
 
-                # Do not silently continue with invalid Firebase
-                # credentials. This makes the actual deployment
-                # problem visible in Render logs.
+                # Do not silently continue with invalid Firebase credentials.
                 raise
 
         # -----------------------------------------------------

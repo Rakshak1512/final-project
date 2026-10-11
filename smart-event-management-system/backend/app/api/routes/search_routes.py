@@ -1,13 +1,13 @@
 """
 Global Search Route for EventSphere
-Provides fast, role-aware query responses across:
+Provides fast, role-aware, case-insensitive query responses across:
 - Direct Navigation Links
-- Events
-- Certificates
-- Registrations & Tickets
-- Results & Winners
+- Campus Events
+- Student Certificates
+- Event Registrations & Tickets
+- Event Results & Award Standings
 - Assigned Work & Faculty Tasks
-- Faculty Directory
+- Faculty Directory & Institutional Approvals
 - System Notifications
 """
 import logging
@@ -41,32 +41,73 @@ class GlobalSearchResponse(BaseModel):
 
 @router.get("/global", response_model=GlobalSearchResponse)
 def global_search(
-    q: str = Query(..., min_length=1, max_length=100, description="Search query string"),
+    q: Optional[str] = Query(default="", max_length=100, description="Search query string"),
     current_user: User = Depends(get_current_approved_user),
 ):
-    query_str = q.strip().lower()
+    raw_query = (q or "").strip()
+    query_str = raw_query.lower()
     if not query_str:
-        return GlobalSearchResponse(query=q, total=0, results=[])
+        return GlobalSearchResponse(query="", total=0, results=[])
+
+    query_terms = [t for t in query_str.split() if t]
+
+    def matches(*fields) -> bool:
+        combined = " ".join(str(f or "") for f in fields).lower()
+        if query_str in combined:
+            return True
+        return all(term in combined for term in query_terms)
 
     role = (current_user.role or "student").lower()
     base_path = f"/{role}" if role in ("student", "faculty", "admin", "volunteer") else "/student"
     results: List[SearchResultItem] = []
 
     try:
-        # 1. Navigation & Quick Links Matching
-        nav_items = [
-            ("events", "Browse Events", "Explore upcoming campus fests, workshops, and hackathons", f"{base_path}/events"),
-            ("certificates", "My Certificates" if role == "student" else "Manage Certificates", "View and download verified digital certificates", f"{base_path}/certificates"),
-            ("registrations", "My Registrations" if role == "student" else "Event Registrations", "Track ticket QR passes and registration approvals", f"{base_path}/my-registrations" if role == "student" else f"{base_path}/registrations"),
-            ("reports", "Registration Reports", "Review student rosters and download PDF reports", f"{base_path}/registration-reports" if role == "faculty" else f"{base_path}/reports"),
-            ("results", "Results & Winners", "View declared standings, winners, and merit certificates", f"{base_path}/results" if role == "faculty" else f"{base_path}/certificates"),
-            ("attendance", "Attendance & QR", "Real-time attendee check-ins and QR verification", f"{base_path}/registration-reports" if role == "faculty" else f"{base_path}/dashboard"),
-            ("tasks", "Assigned Work", "Review administrative directives and event responsibilities", f"{base_path}/tasks" if role == "faculty" else f"{base_path}/assignments"),
-            ("notifications", "Notifications", "Live system announcements and check-in alerts", f"{base_path}/notifications"),
-            ("profile", "Profile Settings", "Manage account information and security", f"{base_path}/profile"),
-        ]
+        # 1. Navigation & Quick Links Matching (Filtered by Role)
+        nav_items = []
+        if role == "student":
+            nav_items = [
+                ("events", "Browse Events", "Explore upcoming campus fests, workshops, and hackathons", f"{base_path}/events"),
+                ("registrations", "My Registrations", "Track ticket QR passes and registration approvals", f"{base_path}/my-registrations"),
+                ("certificates", "My Certificates", "View and download verified digital certificates", f"{base_path}/certificates"),
+                ("notifications", "Notifications", "Live system announcements and alerts", f"{base_path}/notifications"),
+                ("profile", "Profile Settings", "Manage account information and security", f"{base_path}/profile"),
+                ("settings", "Account Settings", "Customize your preferences and account", f"{base_path}/settings"),
+            ]
+        elif role == "faculty":
+            nav_items = [
+                ("dashboard", "Faculty Dashboard", "Overview of department events and registrations", f"{base_path}/dashboard"),
+                ("events", "Manage Events", "Create, edit, and organize campus events", f"{base_path}/events"),
+                ("student-approvals", "Student Approvals", "Review and verify student registrations", f"{base_path}/student-approvals"),
+                ("volunteer-approvals", "Volunteer Approvals", "Review and verify student volunteers", f"{base_path}/volunteer-approvals"),
+                ("registrations", "Event Registrations", "Track attendee lists and ticket passes", f"{base_path}/registrations"),
+                ("reports", "Registration Reports", "Review student rosters and download PDF reports", f"{base_path}/registration-reports"),
+                ("results", "Results & Winners", "Declare winners and manage standings", f"{base_path}/results"),
+                ("certificates", "Manage Certificates", "Generate and upload event certificates", f"{base_path}/certificates"),
+                ("tasks", "Assigned Work", "Review administrative directives and responsibilities", f"{base_path}/tasks"),
+                ("notifications", "Notifications", "Live alerts and notifications", f"{base_path}/notifications"),
+                ("profile", "Profile Settings", "Manage account profile", f"{base_path}/profile"),
+            ]
+        elif role == "admin":
+            nav_items = [
+                ("dashboard", "Admin Dashboard", "System overview, active events, and counts", f"{base_path}/dashboard"),
+                ("faculty-approvals", "Faculty Approvals", "Verify new faculty coordinator registrations", f"{base_path}/faculty-approvals"),
+                ("faculty", "Faculty Directory", "All department faculty coordinators and tasks", f"{base_path}/faculty"),
+                ("assignments", "Work Assignments", "Assign and monitor administrative directives", f"{base_path}/assignments"),
+                ("events", "Manage Events", "Campus-wide event catalog and approvals", f"{base_path}/events"),
+                ("reports", "Master Reports", "Generate institutional PDF analytics and reports", f"{base_path}/reports"),
+                ("notifications", "Notifications", "Administrative system alerts", f"{base_path}/notifications"),
+                ("profile", "Profile Settings", "Manage administrator profile", f"{base_path}/profile"),
+            ]
+        elif role == "volunteer":
+            nav_items = [
+                ("dashboard", "Volunteer Scanner", "Scan attendee QR tickets and mark check-in", f"{base_path}/dashboard"),
+                ("events", "Assigned Events", "View active events and schedules", f"{base_path}/events"),
+                ("notifications", "Notifications", "System announcements and updates", f"{base_path}/notifications"),
+                ("profile", "Profile Settings", "Manage volunteer profile", f"{base_path}/profile"),
+            ]
+
         for key, title, desc, link in nav_items:
-            if query_str in key or query_str in title.lower() or key in query_str:
+            if matches(key, title, desc):
                 results.append(SearchResultItem(
                     id=f"nav-{key}",
                     title=title,
@@ -76,150 +117,143 @@ def global_search(
                     badge="Page",
                 ))
 
-        # 2. Events Search (Available to all roles)
+        # 2. Campus Events Search (Visible across all roles)
         all_events = []
         try:
             all_events = db_service.get_all_events()
             for ev in all_events:
-                ev_title = (ev.title or "").lower()
-                ev_cat = (ev.category or "").lower()
-                ev_venue = (ev.venue or "").lower()
-                ev_desc = (ev.description or "").lower()
-                if (
-                    query_str in ev_title
-                    or query_str in ev_cat
-                    or query_str in ev_venue
-                    or query_str in ev_desc
-                    or str(ev.id) == query_str
-                ):
+                if matches(ev.title, ev.category, ev.venue, ev.description, str(ev.id)):
                     results.append(SearchResultItem(
                         id=f"event-{ev.id}",
                         title=ev.title,
                         category="Events",
-                        subtitle=f"{ev.category} · {ev.venue or 'Campus'} · {ev.event_date} ({ev.available_seats}/{ev.total_seats} spots available)",
-                        link=f"{base_path}/events/{ev.id}" if role == "student" else f"{base_path}/events",
+                        subtitle=f"{ev.category} · {ev.venue or 'Campus'} · {ev.event_date} ({ev.available_seats}/{ev.total_seats} spots left)",
+                        link=f"{base_path}/events/{ev.id}",
                         badge=ev.category,
                     ))
         except Exception as ev_err:
             logger.debug(f"Search events query error: {ev_err}")
 
-        # 3. Certificates Search
+        # 3. Certificates Search (Role-based access enforced)
         try:
             if role == "student":
                 student_certs = db_service.get_certificates_by_registration_number(current_user.registration_number or "")
                 for c in student_certs:
-                    c_title = (c.title or "").lower()
-                    c_id_str = f"esp-{c.id:06d}".lower()
-                    if query_str in c_title or query_str in c_id_str or str(c.id) == query_str or "cert" in query_str:
+                    c_id_str = f"ESP-{c.id:06d}" if isinstance(c.id, int) else f"ESP-{c.id}"
+                    issued_date = c.uploaded_at.strftime("%Y-%m-%d") if getattr(c, "uploaded_at", None) and hasattr(c.uploaded_at, "strftime") else "Recent"
+                    if matches(c.title, c_id_str, str(c.id), "certificate"):
                         results.append(SearchResultItem(
                             id=f"cert-{c.id}",
                             title=c.title,
                             category="Certificates",
-                            subtitle=f"Certificate ID: ESP-{c.id:06d} · Issued: {c.issue_date or 'Recent'}",
+                            subtitle=f"Certificate ID: {c_id_str} · Issued: {issued_date}",
                             link=f"{base_path}/certificates",
                             badge="Certificate",
                         ))
             elif role in ("faculty", "admin"):
-                all_uploaded = db_service.get_faculty_uploaded_certificates(current_user.id) if role == "faculty" else []
+                all_uploaded = db_service.get_certificates_by_faculty(current_user.id) if role == "faculty" else []
                 for c in all_uploaded:
-                    c_title = (c.title or "").lower()
-                    c_reg = (c.registration_number or "").lower()
-                    c_name = (c.student_name or "").lower()
-                    if query_str in c_title or query_str in c_reg or query_str in c_name or "cert" in query_str:
+                    c_id_str = f"ESP-{c.id:06d}" if isinstance(c.id, int) else f"ESP-{c.id}"
+                    if matches(c.title, c.registration_number, c.student_name, c_id_str, "certificate"):
                         results.append(SearchResultItem(
                             id=f"cert-{c.id}",
                             title=c.title,
                             category="Certificates",
-                            subtitle=f"Student: {c.student_name} ({c.registration_number}) · ESP-{c.id:06d}",
+                            subtitle=f"Student: {c.student_name} ({c.registration_number}) · {c_id_str}",
                             link=f"{base_path}/certificates",
                             badge="Certificate",
                         ))
         except Exception as cert_err:
             logger.debug(f"Search certificates query error: {cert_err}")
 
-        # 4. Registrations & Tickets Search
+        # 4. Registrations & Tickets Search (Role-based access enforced)
         try:
             if role == "student":
                 my_regs = db_service.get_my_registrations(current_user.id)
                 for r in my_regs:
-                    r_title = (r.event.title if r.event else "").lower()
-                    r_code = (r.ticket_code or "").lower()
-                    r_status = str(r.status.value if hasattr(r.status, "value") else r.status).lower()
-                    if query_str in r_title or query_str in r_code or query_str in r_status or "regist" in query_str:
+                    r_title = r.event.title if r.event else f"Event #{r.event_id}"
+                    r_code = r.ticket_code or ""
+                    r_status = str(r.status.value if hasattr(r.status, "value") else r.status)
+                    if matches(r_title, r_code, r_status, "registration", "ticket"):
                         results.append(SearchResultItem(
                             id=f"reg-{r.id}",
-                            title=r.event.title if r.event else f"Registration #{r.id}",
+                            title=r_title,
                             category="My Registrations",
-                            subtitle=f"Ticket: {r.ticket_code} · Status: {r_status.upper()}",
+                            subtitle=f"Ticket: #{r_code} · Status: {r_status.upper()}",
                             link=f"{base_path}/my-registrations",
                             badge=r_status.capitalize(),
                         ))
             elif role in ("faculty", "admin"):
-                my_events = db_service.get_events_by_organizer(current_user.id) if role == "faculty" else all_events[:10]
-                for ev in my_events[:10]:
+                target_events = db_service.get_events_by_organizer(current_user.id) if role == "faculty" else all_events[:10]
+                for ev in target_events[:8]:
                     ev_regs = db_service.get_event_registrations(ev.id)
                     for r in ev_regs:
-                        s_name = (r.student.name if r.student else r.student_name or "").lower()
-                        s_reg = (r.student.registration_number if r.student else r.registration_number or "").lower()
-                        s_email = (r.student.email if r.student and r.student.email else "").lower()
-                        s_dept = (r.student.department if r.student and r.student.department else "").lower()
-                        t_code = (r.ticket_code or "").lower()
-                        r_st = str(r.status.value if hasattr(r.status, "value") else r.status).lower()
-                        if query_str in s_name or query_str in s_reg or query_str in s_email or query_str in s_dept or query_str in t_code or query_str in r_st:
+                        s_name = r.student.name if r.student else (r.student_name or "")
+                        s_reg = r.student.registration_number if r.student else (r.registration_number or "")
+                        s_dept = r.student.department if r.student and r.student.department else "General"
+                        t_code = r.ticket_code or ""
+                        r_st = str(r.status.value if hasattr(r.status, "value") else r.status)
+                        if matches(s_name, s_reg, s_dept, t_code, r_st, ev.title):
                             results.append(SearchResultItem(
                                 id=f"reg-{r.id}",
-                                title=f"{r.student.name if r.student else r.student_name} ({r.student.registration_number if r.student else r.registration_number})",
+                                title=f"{s_name} ({s_reg})",
                                 category="Student Registrations",
-                                subtitle=f"Event: {ev.title} · Dept: {r.student.department if r.student and r.student.department else 'General'} · Ticket: {r.ticket_code} · Status: {r_st.upper()}",
-                                link=f"{base_path}/registrations?eventId={ev.id}",
+                                subtitle=f"Event: {ev.title} · Ticket: #{t_code} · {r_st.upper()}",
+                                link=f"{base_path}/registrations",
                                 badge=r_st.capitalize(),
                             ))
         except Exception as reg_err:
             logger.debug(f"Search registrations query error: {reg_err}")
 
-        # 5. Results & Winners Search
+        # 5. Results & Award Standings Search
         try:
             if role in ("faculty", "admin"):
-                for ev in all_events[:10]:
+                for ev in all_events[:8]:
                     results_list = db_service.get_event_results(ev.id)
                     for res in results_list:
-                        res_name = (res.student_name or "").lower()
-                        res_reg = (res.registration_number or "").lower()
-                        res_pos = (res.position or "").lower()
-                        if query_str in res_name or query_str in res_reg or query_str in res_pos or "winner" in query_str or "result" in query_str:
+                        if matches(res.student_name, res.registration_number, res.position, res.event_title or ev.title, "winner", "result"):
                             results.append(SearchResultItem(
                                 id=f"result-{res.id}",
                                 title=f"{res.student_name} — {res.position}",
                                 category="Results & Winners",
                                 subtitle=f"Event: {res.event_title or ev.title} · Reg No: {res.registration_number}",
-                                link=f"{base_path}/results?eventId={ev.id}",
+                                link=f"{base_path}/results",
                                 badge=res.position,
                             ))
         except Exception as res_err:
             logger.debug(f"Search results query error: {res_err}")
 
-        # 6. Assigned Work & Tasks Search
+        # 6. Assigned Work & Faculty Tasks (Faculty & Admin only)
         try:
             if role == "faculty":
                 my_tasks = db_service.get_faculty_assignments(current_user.id)
                 for t in my_tasks:
-                    t_title = (t.title or "").lower()
-                    t_desc = (t.description or "").lower()
-                    if query_str in t_title or query_str in t_desc or "task" in query_str or "work" in query_str:
+                    if matches(t.title, t.description, t.priority, t.status, "task", "work"):
                         results.append(SearchResultItem(
                             id=f"task-{t.id}",
                             title=t.title,
                             category="Assigned Work",
-                            subtitle=f"Priority: {t.priority.upper()} · Status: {t.status} · Deadline: {t.deadline or 'N/A'}",
+                            subtitle=f"Priority: {t.priority.upper()} · Status: {t.status} · Due: {t.deadline or 'N/A'}",
                             link=f"{base_path}/tasks",
                             badge=t.priority.capitalize(),
+                        ))
+
+                # Pending Student Approvals for Faculty
+                pending_stu = db_service.get_pending_students()
+                for ps in pending_stu:
+                    if matches(ps.name, ps.registration_number, ps.department, "pending", "approval"):
+                        results.append(SearchResultItem(
+                            id=f"pending-stu-{ps.id}",
+                            title=f"Pending Student: {ps.name}",
+                            category="Student Approvals",
+                            subtitle=f"Reg: {ps.registration_number or 'N/A'} · {ps.department or 'General'} · Awaiting Faculty Approval",
+                            link=f"{base_path}/student-approvals",
+                            badge="Pending",
                         ))
             elif role == "admin":
                 all_tasks = db_service.get_all_assignments()
                 for t in all_tasks:
-                    t_title = (t.title or "").lower()
-                    t_fac = (t.faculty_name or "").lower()
-                    if query_str in t_title or query_str in t_fac or "task" in query_str or "work" in query_str:
+                    if matches(t.title, t.faculty_name, t.priority, t.status, "task", "assignment"):
                         results.append(SearchResultItem(
                             id=f"task-{t.id}",
                             title=t.title,
@@ -229,13 +263,10 @@ def global_search(
                             badge=t.status.capitalize(),
                         ))
 
-                # Faculty Directory Search for Admin
+                # Faculty Directory Search
                 fac_list = db_service.get_all_faculty_with_stats()
                 for f in fac_list:
-                    f_name = (f.get("name") or "").lower()
-                    f_dept = (f.get("department") or "").lower()
-                    f_email = (f.get("email") or "").lower()
-                    if query_str in f_name or query_str in f_dept or query_str in f_email or "faculty" in query_str:
+                    if matches(f.get("name"), f.get("department"), f.get("email"), "faculty"):
                         results.append(SearchResultItem(
                             id=f"fac-{f.get('id')}",
                             title=f.get("name"),
@@ -244,53 +275,27 @@ def global_search(
                             link=f"{base_path}/faculty",
                             badge=f.get("department") or "Faculty",
                         ))
+
                 # Pending Faculty Approvals
-                try:
-                    pending_fac = db_service.get_pending_faculty()
-                    for pf in pending_fac:
-                        p_name = (pf.name or "").lower()
-                        p_email = (pf.email or "").lower()
-                        p_dept = (pf.department or "").lower()
-                        if query_str in p_name or query_str in p_email or query_str in p_dept or "pending" in query_str or "approval" in query_str:
-                            results.append(SearchResultItem(
-                                id=f"pending-fac-{pf.id}",
-                                title=f"Pending Approval: {pf.name}",
-                                category="Faculty Approvals",
-                                subtitle=f"{pf.department or 'Faculty'} · {pf.email} · Awaiting Admin Verification",
-                                link=f"{base_path}/faculty",
-                                badge="Pending Approval",
-                            ))
-                except Exception:
-                    pass
-            elif role == "faculty":
-                # Pending Student Approvals for Faculty
-                try:
-                    pending_stu = db_service.get_pending_students()
-                    for ps in pending_stu:
-                        ps_name = (ps.name or "").lower()
-                        ps_reg = (ps.registration_number or "").lower()
-                        ps_dept = (ps.department or "").lower()
-                        if query_str in ps_name or query_str in ps_reg or query_str in ps_dept or "pending" in query_str or "approval" in query_str:
-                            results.append(SearchResultItem(
-                                id=f"pending-stu-{ps.id}",
-                                title=f"Pending Student: {ps.name}",
-                                category="Student Approvals",
-                                subtitle=f"Reg: {ps.registration_number or 'N/A'} · {ps.department or 'Dept'} · Awaiting Faculty Approval",
-                                link=f"{base_path}/dashboard",
-                                badge="Pending Approval",
-                            ))
-                except Exception:
-                    pass
+                pending_fac = db_service.get_pending_faculty()
+                for pf in pending_fac:
+                    if matches(pf.name, pf.email, pf.department, "pending", "approval"):
+                        results.append(SearchResultItem(
+                            id=f"pending-fac-{pf.id}",
+                            title=f"Pending Faculty: {pf.name}",
+                            category="Faculty Approvals",
+                            subtitle=f"{pf.department or 'Faculty'} · {pf.email} · Awaiting Admin Verification",
+                            link=f"{base_path}/faculty-approvals",
+                            badge="Pending Approval",
+                        ))
         except Exception as task_err:
             logger.debug(f"Search tasks query error: {task_err}")
 
-        # 7. Notifications Search
+        # 7. Notifications Search (User's own notifications only)
         try:
             my_notifs = db_service.list_notifications(user_id=current_user.id, limit=20)
             for n in my_notifs:
-                n_title = (n.title or "").lower()
-                n_msg = (n.message or "").lower()
-                if query_str in n_title or query_str in n_msg or "notif" in query_str:
+                if matches(n.title, n.message, "notification", "alert"):
                     results.append(SearchResultItem(
                         id=f"notif-{n.id}",
                         title=n.title,
@@ -311,8 +316,8 @@ def global_search(
                 seen_keys.add(key)
                 deduped.append(r)
 
-        return GlobalSearchResponse(query=q, total=len(deduped), results=deduped[:15])
+        return GlobalSearchResponse(query=raw_query, total=len(deduped), results=deduped[:15])
 
     except Exception as e:
-        logger.exception(f"Global search error for query '{q}': {e}")
-        return GlobalSearchResponse(query=q, total=0, results=[])
+        logger.exception(f"Global search error for query '{raw_query}': {e}")
+        return GlobalSearchResponse(query=raw_query, total=0, results=[])
