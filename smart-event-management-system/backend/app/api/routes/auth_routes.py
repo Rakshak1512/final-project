@@ -278,23 +278,19 @@ def register(payload: UserCreate, request: Request):
         try:
             email_sent, email_msg = send_otp_email(clean_email, otp, payload.name.strip(), settings.OTP_EXPIRE_MINUTES)
             if not email_sent:
-                if settings.APP_ENV == "production" or (settings.RESEND_API_KEY and not settings.DEBUG):
-                    logger.error("[AUTH] [EMAIL] Registration verification email could not be sent to %s: %s", _mask_email(clean_email), email_msg)
-                    raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail="Unable to send verification email via Resend. Please try again later.",
-                    )
-                else:
-                    logger.warning("[AUTH] [EMAIL] Verification email could not be delivered to %s: %s", _mask_email(clean_email), email_msg)
+                logger.error("[AUTH] [EMAIL] Registration verification email could not be sent to %s: %s", _mask_email(clean_email), email_msg)
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Verification email delivery failed via Resend: {email_msg}",
+                )
         except HTTPException:
             raise
         except Exception as mail_err:
             logger.error("[AUTH] [EMAIL] Unexpected error delivering OTP to %s: %s", _mask_email(clean_email), mail_err)
-            if settings.APP_ENV == "production" or (settings.RESEND_API_KEY and not settings.DEBUG):
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="Unable to send verification email via Resend. Please try again later.",
-                )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Unable to send verification email via Resend: {mail_err}",
+            )
 
         # Return unverified placeholder UserOut object without exposing OTP
         return UserOut(
@@ -469,9 +465,12 @@ def send_email_login_otp(payload: EmailSendOtpRequest, request: Request):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=msg)
 
     email_sent, email_msg = send_otp_email(clean_email, otp, user.name, settings.OTP_EXPIRE_MINUTES)
-    if not email_sent and not settings.DEBUG:
+    if not email_sent:
         logger.error("[AUTH] [EMAIL] Failed to send login OTP to %s: %s", _mask_email(clean_email), email_msg)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Unable to send verification email. Please try again later.")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Unable to send login OTP via Resend: {email_msg}",
+        )
 
     return {"message": "Login OTP has been sent to your email."}
 
@@ -547,14 +546,11 @@ def resend_verification_otp(payload: ResendOtpRequest):
 
         email_sent, email_msg = send_otp_email(clean_email, otp, pending.get("name", "User"), settings.OTP_EXPIRE_MINUTES)
         if not email_sent:
-            if settings.APP_ENV != "production" or settings.DEBUG:
-                logger.warning("[AUTH] [EMAIL] Dev mode: resend simulated for %s: %s", _mask_email(clean_email), email_msg)
-            else:
-                logger.error("[AUTH] [EMAIL] Failed to resend verification email to %s: %s", _mask_email(clean_email), email_msg)
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="Unable to send verification email. Please try again later.",
-                )
+            logger.error("[AUTH] [EMAIL] Failed to resend verification email to %s: %s", _mask_email(clean_email), email_msg)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Unable to send verification email via Resend: {email_msg}",
+            )
         return {"message": "Verification OTP resent successfully"}
 
     # 3. Fallback for legacy unverified user
@@ -566,14 +562,11 @@ def resend_verification_otp(payload: ResendOtpRequest):
 
         email_sent, email_msg = send_otp_email(existing.email, otp, existing.name, settings.OTP_EXPIRE_MINUTES)
         if not email_sent:
-            if settings.APP_ENV != "production" or settings.DEBUG:
-                logger.warning("[AUTH] [EMAIL] Dev mode: resend simulated for %s: %s", _mask_email(clean_email), email_msg)
-            else:
-                logger.error("[AUTH] [EMAIL] Failed to resend verification email to legacy user %s: %s", _mask_email(clean_email), email_msg)
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="Unable to send verification email. Please try again later.",
-                )
+            logger.error("[AUTH] [EMAIL] Failed to resend verification email to legacy user %s: %s", _mask_email(clean_email), email_msg)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Unable to send verification email via Resend: {email_msg}",
+            )
         return {"message": "Verification OTP resent successfully"}
 
     raise HTTPException(
@@ -686,7 +679,7 @@ def forgot_password(payload: ForgotPasswordRequest):
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
     db_service.create_password_reset(user.id, otp, expires_at)
     sent = send_password_reset_email(user.email, user.name, otp)
-    if not sent and (settings.APP_ENV == "production" or (settings.RESEND_API_KEY and not settings.DEBUG)):
+    if not sent:
         logger.error("[AUTH] [EMAIL] Password reset email could not be sent to %s via Resend", _mask_email(user.email))
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
