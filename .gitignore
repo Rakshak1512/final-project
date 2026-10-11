@@ -101,3 +101,5 @@ Thumbs.db
 scratch/
 **/scratch/
 
+.vercel
+.env*
