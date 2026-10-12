@@ -102,4 +102,7 @@ scratch/
 **/scratch/
 
 .vercel
+.vercel/
+**/.vercel/
 .env*
+**/.env*
