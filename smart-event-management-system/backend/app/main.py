@@ -58,9 +58,11 @@ app.add_middleware(
 
 @app.middleware("http")
 async def vercel_path_rewrite_middleware(request: Request, call_next):
-    matched = request.headers.get("x-matched-path")
-    if matched:
-        request.scope["path"] = matched.split("?", 1)[0]
+    route_param = request.query_params.get("__route")
+    if route_param:
+        request.scope["path"] = route_param
+    elif request.headers.get("x-matched-path"):
+        request.scope["path"] = request.headers.get("x-matched-path").split("?", 1)[0]
     return await call_next(request)
 
 try:
