@@ -90,21 +90,15 @@ def on_startup():
             logger.error(f"[AUTH] Error seeding test users: {e}")
 
     # Safe email configuration validation without exposing credentials or keys
-    is_resend = (settings.EMAIL_PROVIDER == "resend" or (settings.is_resend_configured and settings.EMAIL_PROVIDER != "smtp"))
-    if is_resend:
-        resend_loaded = settings.is_resend_configured
-        sender_addr = settings.RESEND_FROM_EMAIL or "onboarding@resend.dev"
-        logger.info(
-            f"[EMAIL] Provider: Resend HTTP API | Status: {'CONFIGURED' if resend_loaded else 'CREDENTIALS NEEDED (set RESEND_API_KEY in backend/.env)'} "
-            f"| Sender: {sender_addr}"
-        )
-    else:
-        smtp_loaded = settings.is_smtp_configured
-        sender_addr = settings.SMTP_FROM_EMAIL or settings.SMTP_USER or "smart.event.system2026@gmail.com"
-        logger.info(
-            f"[EMAIL] Provider: Gmail SMTP | Status: {'CONFIGURED' if smtp_loaded else 'CREDENTIALS NEEDED'} "
-            f"| Host: {settings.SMTP_HOST}:{settings.SMTP_PORT} | Sender: {sender_addr}"
-        )
+    smtp_loaded = settings.is_smtp_configured
+    sender_addr = settings.SMTP_FROM_EMAIL or settings.SMTP_USER or "noreply@eventsphere.edu"
+    pass_len = len(settings.SMTP_PASSWORD) if settings.SMTP_PASSWORD else 0
+    valid_len = (pass_len == 16)
+    logger.info(
+        f"[EMAIL] Provider: Gmail SMTP | Status: {'CONFIGURED' if smtp_loaded else 'CREDENTIALS NEEDED'} "
+        f"| Host: {settings.SMTP_HOST}:{settings.SMTP_PORT} (TLS: {settings.SMTP_USE_TLS}) | Sender: {sender_addr} "
+        f"| App Password Format: {'VALID (16 chars)' if valid_len else f'INVALID LENGTH ({pass_len} chars, expected 16)' if pass_len else 'NOT SET'}"
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -150,26 +144,22 @@ def health_check():
 
 @app.get("/api/health/email", tags=["Health"])
 def email_health_check(check_auth: bool = False):
-    is_resend = (settings.EMAIL_PROVIDER == "resend" or (settings.is_resend_configured and settings.EMAIL_PROVIDER != "smtp"))
-    resend_configured = settings.is_resend_configured
     smtp_configured = settings.is_smtp_configured
-    sender_addr = settings.RESEND_FROM_EMAIL if is_resend else (settings.SMTP_FROM_EMAIL or settings.SMTP_USER or "smart.event.system2026@gmail.com")
+    sender_addr = settings.SMTP_FROM_EMAIL or settings.SMTP_USER or "noreply@eventsphere.edu"
+    pass_len = len(settings.SMTP_PASSWORD) if settings.SMTP_PASSWORD else 0
 
     res = {
-        "provider": "resend" if is_resend else "smtp",
-        "status": "configured" if (resend_configured if is_resend else smtp_configured) else "credentials_required",
+        "provider": "smtp",
+        "status": "configured" if smtp_configured else "credentials_required",
         "sender_email": sender_addr,
-        "resend_configured": resend_configured,
+        "smtp_host": settings.SMTP_HOST,
+        "smtp_port": settings.SMTP_PORT,
+        "smtp_use_tls": settings.SMTP_USE_TLS,
         "smtp_configured": smtp_configured,
+        "password_length": pass_len,
+        "is_valid_app_password_format": pass_len == 16,
     }
-    if is_resend:
-        is_sandbox = "onboarding@resend.dev" in (sender_addr or "")
-        res["domain_note"] = (
-            "Using Resend sandbox domain (onboarding@resend.dev). Delivery is restricted to the verified Resend account email. Verify a custom domain at resend.com/domains for unrestricted delivery."
-            if is_sandbox else
-            "Using custom verified sender domain."
-        )
-    elif check_auth:
+    if check_auth:
         from app.services.email_service import test_smtp_connection
         auth_ok, auth_detail = test_smtp_connection()
         res["auth_tested"] = True

@@ -14,12 +14,24 @@ firebase_credentials.json
 **/firebase_credentials.json
 serviceAccountKey.json
 **/serviceAccountKey.json
+*service_account*.json
+*service-account*.json
+*credentials*.json
+**/*credentials*.json
 *.pem
 *.key
 *.p8
 *.p12
+*.pfx
 *.cer
 *.crt
+
+# Local databases and backups
+*.sqlite
+*.sqlite3
+*.db
+*.bak
+*.backup
 
 # Node.js & Vite
 node_modules/
@@ -101,8 +113,19 @@ Thumbs.db
 scratch/
 **/scratch/
 
-.vercel
-.vercel/
+# Explicit project-level protection for local secrets and deployment state
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
 **/.vercel/
-.env*
-**/.env*
+.vercel/
+**/.dev.vars
+**/firebase_credentials.json
+**/serviceAccountKey.json
+**/*service-account*.json
+**/*service_account*.json
+**/*.pem
+**/*.key
+**/*.pfx
+

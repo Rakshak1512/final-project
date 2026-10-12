@@ -1,25 +1,22 @@
 """
-Email Service for transactional emails exclusively via Gmail SMTP (smtplib).
+Email Service for transactional emails strictly via Gmail SMTP (smtplib).
 
 Configured via environment variables in backend .env:
 - SMTP_HOST: smtp.gmail.com (default)
 - SMTP_PORT: 587 (default)
-- SMTP_USER: smart.event.system2026@gmail.com
-- SMTP_PASSWORD: 16-character Google App Password
+- SMTP_USER: user email from backend .env
+- SMTP_PASSWORD: 16-character Google App Password from backend .env
 - SMTP_FROM_NAME: EventSphere
-- SMTP_FROM_EMAIL: smart.event.system2026@gmail.com
+- SMTP_FROM_EMAIL: user email from backend .env
 - SMTP_USE_TLS: True (STARTTLS)
 """
 from datetime import datetime
 import logging
 import smtplib
-import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
 from typing import Optional, Tuple
-
-import requests
 
 from app.core.config import settings
 
@@ -36,93 +33,6 @@ def _mask_email(email: str) -> str:
     else:
         masked_local = local_part[0] + "*" * (len(local_part) - 2) + local_part[-1]
     return f"{masked_local}@{domain}"
-
-
-def _send_via_resend(
-    to_addr: str, subject: str, html_body: str, text_body: Optional[str] = None
-) -> Tuple[bool, str]:
-    """
-    Send an email using Resend REST API (https://api.resend.com/emails).
-    Returns (success: bool, detail: str).
-    Never simulates successful delivery.
-    """
-    api_key = (settings.RESEND_API_KEY or "").strip()
-    masked_to = _mask_email(to_addr)
-
-    if not api_key:
-        logger.error("[EMAIL] [RESEND] RESEND_API_KEY is not configured on the backend server for %s", masked_to)
-        return False, "RESEND_API_KEY is not configured on the backend server."
-
-    from_name = (settings.SMTP_FROM_NAME or settings.APP_NAME or "EventSphere").strip()
-    from_email = (settings.RESEND_FROM_EMAIL or "onboarding@resend.dev").strip().strip("\"'")
-    sender = f"{from_name} <{from_email}>"
-
-    payload = {
-        "from": sender,
-        "to": [to_addr],
-        "subject": subject,
-        "html": html_body,
-    }
-    if text_body:
-        payload["text"] = text_body
-
-    logger.info("[EMAIL] [RESEND] Dispatching email to %s via Resend API (from: %s)", masked_to, sender)
-
-    max_retries = 2
-    for attempt in range(max_retries):
-        try:
-            response = requests.post(
-                "https://api.resend.com/emails",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=12,
-            )
-            if response.status_code in (200, 201):
-                msg_id = ""
-                try:
-                    res_json = response.json()
-                    msg_id = res_json.get("id", "")
-                except Exception:
-                    pass
-                logger.info("[EMAIL] [RESEND] Successfully accepted by Resend for %s (id: %s)", masked_to, msg_id)
-                return True, "Email delivered successfully via Resend"
-
-            err_detail = ""
-            try:
-                res_json = response.json()
-                err_detail = res_json.get("message") or res_json.get("error") or ""
-            except Exception:
-                pass
-            if not err_detail:
-                err_detail = response.text[:200]
-
-            logger.error(
-                "[EMAIL] [RESEND] API error (HTTP %s) for %s (attempt %d): %s",
-                response.status_code,
-                masked_to,
-                attempt + 1,
-                err_detail,
-            )
-
-            if "domain" in err_detail.lower() or "verify" in err_detail.lower() or "onboarding@resend.dev" in err_detail.lower():
-                err_detail += " (Note: When using onboarding@resend.dev, Resend only allows sending to the email registered on your Resend account. Verify a custom domain at resend.com/domains for unrestricted delivery.)"
-
-            if response.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
-                time.sleep(0.5)
-                continue
-
-            return False, f"Resend API error (HTTP {response.status_code}): {err_detail}"
-        except Exception as e:
-            logger.error("[EMAIL] [RESEND] Network error for %s (attempt %d): %s", masked_to, attempt + 1, str(e))
-            if attempt < max_retries - 1:
-                time.sleep(0.5)
-                continue
-            return False, f"Network error connecting to Resend: {str(e)}"
-
-    return False, "Unable to deliver email via Resend after retries."
 
 
 def _send_via_smtp(
@@ -256,29 +166,18 @@ def send_email_detailed(
     to_email: str, subject: str, html_body: str, text_body: Optional[str] = None
 ) -> Tuple[bool, str]:
     """
-    Primary email dispatch function.
-    Defaults to Resend REST API (https://api.resend.com/emails).
-    Supports Gmail SMTP when explicitly configured (EMAIL_PROVIDER=smtp).
-    Never simulates fake successful delivery.
+    Primary email dispatch function strictly using Gmail SMTP (smtplib).
+    Never simulates fake successful delivery when SMTP fails or is unconfigured.
     """
     to_addr = (to_email or "").strip()
     if not to_addr:
         return False, "Recipient email address is required."
 
-    provider = (settings.EMAIL_PROVIDER or "resend").lower().strip()
-    if provider == "smtp":
-        return _send_via_smtp(to_addr, subject, html_body, text_body)
-    elif provider == "resend" or settings.is_resend_configured:
-        return _send_via_resend(to_addr, subject, html_body, text_body)
-    else:
-        # Fallback check
-        if settings.is_smtp_configured:
-            return _send_via_smtp(to_addr, subject, html_body, text_body)
-        return _send_via_resend(to_addr, subject, html_body, text_body)
+    return _send_via_smtp(to_addr, subject, html_body, text_body)
 
 
 def send_email(to_email: str, subject: str, html_body: str, text_body: Optional[str] = None) -> bool:
-    """Send an email and return boolean status."""
+    """Send an email via Gmail SMTP and return boolean status."""
     success, _ = send_email_detailed(to_email, subject, html_body, text_body)
     return success
 

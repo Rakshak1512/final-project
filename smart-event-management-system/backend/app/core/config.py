@@ -60,36 +60,22 @@ class Settings(BaseSettings):
     # Option 3: Local Firestore Emulator (e.g. "localhost:8080")
     FIRESTORE_EMULATOR_HOST: str = ""
 
-    # Email Provider (Resend HTTP API as primary default; SMTP supported)
-    EMAIL_PROVIDER: str = "resend"
-    RESEND_API_KEY: str = ""
-    RESEND_FROM_EMAIL: str = "onboarding@resend.dev"
+    # Email Provider (Exclusively SMTP via smtplib)
+    EMAIL_PROVIDER: str = "smtp"
 
-    # SMTP Settings (optional fallback/secondary provider)
+    # SMTP Settings
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
-    SMTP_USER: str = "smart.event.system2026@gmail.com"
+    SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM_NAME: str = "EventSphere"
-    SMTP_FROM_EMAIL: str = "smart.event.system2026@gmail.com"
+    SMTP_FROM_EMAIL: str = ""
     SMTP_USE_TLS: bool = True
 
     @field_validator("EMAIL_PROVIDER", mode="before")
     @classmethod
     def clean_email_provider(cls, v: Any) -> str:
-        s = str(v).strip().lower() if v else ""
-        return s or "resend"
-
-    @field_validator("RESEND_API_KEY", mode="before")
-    @classmethod
-    def clean_resend_api_key(cls, v: Any) -> str:
-        return str(v).strip().strip("\"'") if v else ""
-
-    @field_validator("RESEND_FROM_EMAIL", mode="before")
-    @classmethod
-    def clean_resend_from_email(cls, v: Any) -> str:
-        s = str(v).strip().strip("\"'") if v else ""
-        return s or "onboarding@resend.dev"
+        return "smtp"
 
     @field_validator("SMTP_HOST", mode="before")
     @classmethod
@@ -108,14 +94,12 @@ class Settings(BaseSettings):
     @field_validator("SMTP_USER", mode="before")
     @classmethod
     def clean_smtp_user(cls, v: Any) -> str:
-        s = str(v).strip().strip("\"'") if v else ""
-        return s or "smart.event.system2026@gmail.com"
+        return str(v).strip().strip("\"'") if v else ""
 
     @field_validator("SMTP_FROM_EMAIL", mode="before")
     @classmethod
     def clean_smtp_from_email(cls, v: Any) -> str:
-        s = str(v).strip().strip("\"'") if v else ""
-        return s or "smart.event.system2026@gmail.com"
+        return str(v).strip().strip("\"'") if v else ""
 
     @field_validator("SMTP_PASSWORD", mode="before")
     @classmethod
@@ -133,10 +117,6 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return v.lower() in ("true", "1", "yes")
         return True
-
-    @property
-    def is_resend_configured(self) -> bool:
-        return bool(self.RESEND_API_KEY and self.RESEND_API_KEY.strip())
 
     @property
     def is_smtp_configured(self) -> bool:
