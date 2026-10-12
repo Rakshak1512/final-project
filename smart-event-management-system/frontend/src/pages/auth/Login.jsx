@@ -62,7 +62,6 @@ export default function Login() {
   const handleUseAccount = (account) => {
     setRole(account.role);
     setForm((f) => ({ ...f, email: account.email, password: account.password }));
-    setAuthMethod("password");
     setIsTestModalOpen(false);
     toast.success(`${account.label} demo account loaded`);
   };
@@ -70,7 +69,6 @@ export default function Login() {
   const handleLoginNow = async (account) => {
     setRole(account.role);
     setForm((f) => ({ ...f, email: account.email, password: account.password }));
-    setAuthMethod("password");
     setSubmitting(true);
     try {
       const user = await login({

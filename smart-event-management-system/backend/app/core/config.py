@@ -4,18 +4,34 @@ All values are loaded from environment variables (.env file).
 """
 import os
 from functools import lru_cache
-from typing import List
+from typing import Any, List
 
+from dotenv import load_dotenv
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 _backend_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _default_env_path = os.path.join(_backend_root, ".env")
+_candidate_env_paths = [
+    _default_env_path,
+    os.path.join(os.getcwd(), ".env"),
+    os.path.join(os.getcwd(), "smart-event-management-system", "backend", ".env"),
+    os.path.join(os.getcwd(), "backend", ".env"),
+]
+_active_env_files = tuple(dict.fromkeys([p for p in _candidate_env_paths if os.path.exists(p)])) or (_default_env_path, ".env")
+
+# Preload local backend .env to ensure local backend configuration takes precedence
+# and prevents ambient environment variables or other providers from overriding credentials.
+for _candidate in _candidate_env_paths:
+    if os.path.exists(_candidate):
+        load_dotenv(_candidate, override=True)
+        break
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(_default_env_path, ".env"),
+        env_file=_active_env_files,
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -44,8 +60,12 @@ class Settings(BaseSettings):
     # Option 3: Local Firestore Emulator (e.g. "localhost:8080")
     FIRESTORE_EMULATOR_HOST: str = ""
 
-    # Email Provider (Exclusively Gmail SMTP via smtplib STARTTLS)
-    EMAIL_PROVIDER: str = "smtp"
+    # Email Provider (Resend HTTP API as primary default; SMTP supported)
+    EMAIL_PROVIDER: str = "resend"
+    RESEND_API_KEY: str = ""
+    RESEND_FROM_EMAIL: str = "onboarding@resend.dev"
+
+    # SMTP Settings (optional fallback/secondary provider)
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
     SMTP_USER: str = "smart.event.system2026@gmail.com"
@@ -54,9 +74,77 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = "smart.event.system2026@gmail.com"
     SMTP_USE_TLS: bool = True
 
-    # Deprecated email settings (retained for backward compatibility)
-    RESEND_API_KEY: str = ""
-    RESEND_FROM_EMAIL: str = ""
+    @field_validator("EMAIL_PROVIDER", mode="before")
+    @classmethod
+    def clean_email_provider(cls, v: Any) -> str:
+        s = str(v).strip().lower() if v else ""
+        return s or "resend"
+
+    @field_validator("RESEND_API_KEY", mode="before")
+    @classmethod
+    def clean_resend_api_key(cls, v: Any) -> str:
+        return str(v).strip().strip("\"'") if v else ""
+
+    @field_validator("RESEND_FROM_EMAIL", mode="before")
+    @classmethod
+    def clean_resend_from_email(cls, v: Any) -> str:
+        s = str(v).strip().strip("\"'") if v else ""
+        return s or "onboarding@resend.dev"
+
+    @field_validator("SMTP_HOST", mode="before")
+    @classmethod
+    def clean_smtp_host(cls, v: Any) -> str:
+        s = str(v).strip() if v else ""
+        return s or "smtp.gmail.com"
+
+    @field_validator("SMTP_PORT", mode="before")
+    @classmethod
+    def clean_smtp_port(cls, v: Any) -> int:
+        try:
+            return int(v) if v else 587
+        except Exception:
+            return 587
+
+    @field_validator("SMTP_USER", mode="before")
+    @classmethod
+    def clean_smtp_user(cls, v: Any) -> str:
+        s = str(v).strip().strip("\"'") if v else ""
+        return s or "smart.event.system2026@gmail.com"
+
+    @field_validator("SMTP_FROM_EMAIL", mode="before")
+    @classmethod
+    def clean_smtp_from_email(cls, v: Any) -> str:
+        s = str(v).strip().strip("\"'") if v else ""
+        return s or "smart.event.system2026@gmail.com"
+
+    @field_validator("SMTP_PASSWORD", mode="before")
+    @classmethod
+    def clean_smtp_password(cls, v: Any) -> str:
+        if not v:
+            return ""
+        # Remove accidental spaces (e.g. Google's 4x4 grouping 'abcd efgh ijkl mnop') and outer quotes
+        return str(v).replace(" ", "").strip().strip("\"'")
+
+    @field_validator("SMTP_USE_TLS", mode="before")
+    @classmethod
+    def clean_smtp_use_tls(cls, v: Any) -> bool:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes")
+        return True
+
+    @property
+    def is_resend_configured(self) -> bool:
+        return bool(self.RESEND_API_KEY and self.RESEND_API_KEY.strip())
+
+    @property
+    def is_smtp_configured(self) -> bool:
+        return bool(self.SMTP_USER and self.SMTP_PASSWORD)
+
+    @property
+    def is_google_app_password_valid_length(self) -> bool:
+        return len(self.SMTP_PASSWORD) == 16 if self.SMTP_PASSWORD else False
 
     # AI Chatbot Configuration
     AI_PROVIDER: str = "gemini"

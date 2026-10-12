@@ -13,10 +13,13 @@ Configured via environment variables in backend .env:
 from datetime import datetime
 import logging
 import smtplib
+import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
 from typing import Optional, Tuple
+
+import requests
 
 from app.core.config import settings
 
@@ -35,6 +38,93 @@ def _mask_email(email: str) -> str:
     return f"{masked_local}@{domain}"
 
 
+def _send_via_resend(
+    to_addr: str, subject: str, html_body: str, text_body: Optional[str] = None
+) -> Tuple[bool, str]:
+    """
+    Send an email using Resend REST API (https://api.resend.com/emails).
+    Returns (success: bool, detail: str).
+    Never simulates successful delivery.
+    """
+    api_key = (settings.RESEND_API_KEY or "").strip()
+    masked_to = _mask_email(to_addr)
+
+    if not api_key:
+        logger.error("[EMAIL] [RESEND] RESEND_API_KEY is not configured on the backend server for %s", masked_to)
+        return False, "RESEND_API_KEY is not configured on the backend server."
+
+    from_name = (settings.SMTP_FROM_NAME or settings.APP_NAME or "EventSphere").strip()
+    from_email = (settings.RESEND_FROM_EMAIL or "onboarding@resend.dev").strip().strip("\"'")
+    sender = f"{from_name} <{from_email}>"
+
+    payload = {
+        "from": sender,
+        "to": [to_addr],
+        "subject": subject,
+        "html": html_body,
+    }
+    if text_body:
+        payload["text"] = text_body
+
+    logger.info("[EMAIL] [RESEND] Dispatching email to %s via Resend API (from: %s)", masked_to, sender)
+
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=12,
+            )
+            if response.status_code in (200, 201):
+                msg_id = ""
+                try:
+                    res_json = response.json()
+                    msg_id = res_json.get("id", "")
+                except Exception:
+                    pass
+                logger.info("[EMAIL] [RESEND] Successfully accepted by Resend for %s (id: %s)", masked_to, msg_id)
+                return True, "Email delivered successfully via Resend"
+
+            err_detail = ""
+            try:
+                res_json = response.json()
+                err_detail = res_json.get("message") or res_json.get("error") or ""
+            except Exception:
+                pass
+            if not err_detail:
+                err_detail = response.text[:200]
+
+            logger.error(
+                "[EMAIL] [RESEND] API error (HTTP %s) for %s (attempt %d): %s",
+                response.status_code,
+                masked_to,
+                attempt + 1,
+                err_detail,
+            )
+
+            if "domain" in err_detail.lower() or "verify" in err_detail.lower() or "onboarding@resend.dev" in err_detail.lower():
+                err_detail += " (Note: When using onboarding@resend.dev, Resend only allows sending to the email registered on your Resend account. Verify a custom domain at resend.com/domains for unrestricted delivery.)"
+
+            if response.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                time.sleep(0.5)
+                continue
+
+            return False, f"Resend API error (HTTP {response.status_code}): {err_detail}"
+        except Exception as e:
+            logger.error("[EMAIL] [RESEND] Network error for %s (attempt %d): %s", masked_to, attempt + 1, str(e))
+            if attempt < max_retries - 1:
+                time.sleep(0.5)
+                continue
+            return False, f"Network error connecting to Resend: {str(e)}"
+
+    return False, "Unable to deliver email via Resend after retries."
+
+
 def _send_via_smtp(
     to_addr: str, subject: str, html_body: str, text_body: Optional[str] = None
 ) -> Tuple[bool, str]:
@@ -44,17 +134,18 @@ def _send_via_smtp(
     Never simulates successful delivery.
     """
     masked_to = _mask_email(to_addr)
-    host = settings.SMTP_HOST.strip() if settings.SMTP_HOST else "smtp.gmail.com"
+    host = (settings.SMTP_HOST or "smtp.gmail.com").strip()
     port = int(settings.SMTP_PORT) if settings.SMTP_PORT else 587
     user = (settings.SMTP_USER or "smart.event.system2026@gmail.com").strip()
-    password = (settings.SMTP_PASSWORD or "").strip().replace(" ", "")
+    password = (settings.SMTP_PASSWORD or "").replace(" ", "").strip().strip("\"'")
     from_name = (settings.SMTP_FROM_NAME or settings.APP_NAME or "EventSphere").strip()
     from_email = (settings.SMTP_FROM_EMAIL or user or "smart.event.system2026@gmail.com").strip()
 
     if not user or not password:
-        logger.error("[EMAIL] [SMTP] Credentials missing in backend .env for %s", masked_to)
+        logger.error("[EMAIL] [SMTP] Credentials missing in backend .env for %s (user=%s, password_set=%s)", masked_to, _mask_email(user), bool(password))
         return False, "Gmail SMTP credentials not configured (SMTP_USER or SMTP_PASSWORD is empty in backend .env)."
 
+    pass_len = len(password)
     sender_header = formataddr((from_name, from_email))
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -66,12 +157,25 @@ def _send_via_smtp(
     if html_body:
         msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-    logger.info("[EMAIL] [SMTP] Connecting to Gmail SMTP %s:%s for %s", host, port, masked_to)
+    logger.info(
+        "[EMAIL] [SMTP] Connecting to Gmail SMTP %s:%s (TLS: %s, sender: %s, pass_length: %d) for %s",
+        host, port, settings.SMTP_USE_TLS, _mask_email(user), pass_len, masked_to
+    )
+    if pass_len != 16:
+        logger.warning(
+            "[EMAIL] [SMTP] Diagnostic Warning: SMTP_PASSWORD length is %d characters (Google App Passwords must be exactly 16 characters).",
+            pass_len
+        )
 
     try:
         if port == 465:
             with smtplib.SMTP_SSL(host, port, timeout=15) as server:
-                server.login(user, password)
+                try:
+                    server.login(user, password)
+                except (smtplib.SMTPAuthenticationError, smtplib.SMTPServerDisconnected) as auth_err:
+                    hint = f" (detected password length: {pass_len} characters; Google App Passwords must be exactly 16 characters, not normal account password)" if pass_len != 16 else ""
+                    logger.error("[EMAIL] [SMTP] Authentication failed for %s (sender: %s): %s", masked_to, _mask_email(user), str(auth_err))
+                    return False, f"Gmail SMTP authentication failed. Google rejected the credentials (535 Bad Credentials). Please verify your 16-character Google App Password in backend .env.{hint}"
                 server.sendmail(from_email, [to_addr], msg.as_string())
         else:
             with smtplib.SMTP(host, port, timeout=15) as server:
@@ -79,42 +183,102 @@ def _send_via_smtp(
                 if settings.SMTP_USE_TLS:
                     server.starttls()
                     server.ehlo()
-                server.login(user, password)
+                try:
+                    server.login(user, password)
+                except (smtplib.SMTPAuthenticationError, smtplib.SMTPServerDisconnected) as auth_err:
+                    hint = f" (detected password length: {pass_len} characters; Google App Passwords must be exactly 16 characters, not normal account password)" if pass_len != 16 else ""
+                    logger.error("[EMAIL] [SMTP] Authentication failed for %s (sender: %s): %s", masked_to, _mask_email(user), str(auth_err))
+                    return False, f"Gmail SMTP authentication failed. Google rejected the credentials (535 Bad Credentials). Please verify your 16-character Google App Password in backend .env.{hint}"
                 server.sendmail(from_email, [to_addr], msg.as_string())
 
         logger.info("[EMAIL] [SMTP] Email successfully delivered to %s via Gmail SMTP (%s:%d)", masked_to, host, port)
         return True, "Email delivered successfully via Gmail SMTP"
-    except smtplib.SMTPAuthenticationError as e:
-        err_code = getattr(e, "smtp_code", 535)
-        logger.error("[EMAIL] [SMTP] Authentication failed for %s (code %s): %s", masked_to, err_code, str(e))
-        return False, "Gmail SMTP authentication failed. Please verify that your 16-character Google App Password is set correctly in backend .env."
-    except smtplib.SMTPServerDisconnected as e:
-        logger.error("[EMAIL] [SMTP] Connection disconnected during SMTP delivery to %s: %s", masked_to, str(e))
-        return False, "Gmail SMTP authentication failed. Google rejected the credentials (535 Bad Credentials). Please verify your 16-character Google App Password in backend .env."
     except (smtplib.SMTPConnectError, TimeoutError, OSError) as e:
         logger.error("[EMAIL] [SMTP] Connection failed to %s:%s for %s: %s", host, port, masked_to, str(e))
         return False, f"Could not connect to Gmail SMTP server ({host}:{port}): {str(e)}"
+    except smtplib.SMTPAuthenticationError as e:
+        err_code = getattr(e, "smtp_code", 535)
+        logger.error("[EMAIL] [SMTP] Authentication failed for %s (code %s): %s", masked_to, err_code, str(e))
+        hint = f" (detected password length: {pass_len} characters; Google App Passwords must be 16 chars)" if pass_len != 16 else ""
+        return False, f"Gmail SMTP authentication failed. Please verify that your 16-character Google App Password is set correctly in backend .env.{hint}"
+    except smtplib.SMTPServerDisconnected as e:
+        logger.error("[EMAIL] [SMTP] Connection disconnected during SMTP delivery to %s: %s", masked_to, str(e))
+        hint = f" (detected password length: {pass_len} characters; Google App Passwords must be 16 chars)" if pass_len != 16 else ""
+        return False, f"Gmail SMTP authentication failed. Google rejected the credentials (535 Bad Credentials). Please verify your 16-character Google App Password in backend .env.{hint}"
     except Exception as e:
         logger.error("[EMAIL] [SMTP] Delivery failed for %s: %s", masked_to, str(e))
         return False, f"Gmail SMTP delivery failed: {str(e)}"
+
+
+def test_smtp_connection() -> Tuple[bool, str]:
+    """
+    Diagnostic helper to verify Gmail SMTP authentication on smtp.gmail.com:587 with STARTTLS.
+    Returns (success: bool, detail: str).
+    Never logs or leaks credentials.
+    """
+    host = (settings.SMTP_HOST or "smtp.gmail.com").strip()
+    port = int(settings.SMTP_PORT) if settings.SMTP_PORT else 587
+    user = (settings.SMTP_USER or "smart.event.system2026@gmail.com").strip()
+    password = (settings.SMTP_PASSWORD or "").replace(" ", "").strip().strip("\"'")
+
+    if not user or not password:
+        return False, "Gmail SMTP credentials not configured (SMTP_USER or SMTP_PASSWORD is empty in backend .env)."
+
+    pass_len = len(password)
+    logger.info("[EMAIL] [DIAGNOSTIC] Testing Gmail SMTP connection for %s (host: %s:%d, pass_len: %d)", _mask_email(user), host, port, pass_len)
+
+    try:
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=10) as server:
+                server.login(user, password)
+        else:
+            with smtplib.SMTP(host, port, timeout=10) as server:
+                server.ehlo()
+                if settings.SMTP_USE_TLS:
+                    server.starttls()
+                    server.ehlo()
+                server.login(user, password)
+        logger.info("[EMAIL] [DIAGNOSTIC] Gmail SMTP connection and authentication succeeded for %s", _mask_email(user))
+        return True, "Gmail SMTP authentication successful"
+    except (smtplib.SMTPAuthenticationError, smtplib.SMTPServerDisconnected) as e:
+        hint = f" (detected password length: {pass_len} characters; Google App Passwords must be exactly 16 characters, not personal account password)" if pass_len != 16 else ""
+        logger.error("[EMAIL] [DIAGNOSTIC] Authentication failed for %s: %s", _mask_email(user), str(e))
+        return False, f"Gmail SMTP authentication failed: Google rejected the credentials (535 Bad Credentials). Please verify your 16-character Google App Password for {user} in backend .env.{hint}"
+    except (smtplib.SMTPConnectError, TimeoutError, OSError) as e:
+        logger.error("[EMAIL] [DIAGNOSTIC] Connection failed to %s:%s: %s", host, port, str(e))
+        return False, f"Could not connect to Gmail SMTP server ({host}:{port}): {str(e)}"
+    except Exception as e:
+        logger.error("[EMAIL] [DIAGNOSTIC] Unexpected diagnostic error: %s", str(e))
+        return False, f"Gmail SMTP test failed: {str(e)}"
 
 
 def send_email_detailed(
     to_email: str, subject: str, html_body: str, text_body: Optional[str] = None
 ) -> Tuple[bool, str]:
     """
-    Primary email dispatch function using Gmail SMTP (smtplib).
-    Never simulates fake successful delivery when SMTP fails or is unconfigured.
+    Primary email dispatch function.
+    Defaults to Resend REST API (https://api.resend.com/emails).
+    Supports Gmail SMTP when explicitly configured (EMAIL_PROVIDER=smtp).
+    Never simulates fake successful delivery.
     """
     to_addr = (to_email or "").strip()
     if not to_addr:
         return False, "Recipient email address is required."
 
-    return _send_via_smtp(to_addr, subject, html_body, text_body)
+    provider = (settings.EMAIL_PROVIDER or "resend").lower().strip()
+    if provider == "smtp":
+        return _send_via_smtp(to_addr, subject, html_body, text_body)
+    elif provider == "resend" or settings.is_resend_configured:
+        return _send_via_resend(to_addr, subject, html_body, text_body)
+    else:
+        # Fallback check
+        if settings.is_smtp_configured:
+            return _send_via_smtp(to_addr, subject, html_body, text_body)
+        return _send_via_resend(to_addr, subject, html_body, text_body)
 
 
 def send_email(to_email: str, subject: str, html_body: str, text_body: Optional[str] = None) -> bool:
-    """Send an email via Gmail SMTP and return boolean status."""
+    """Send an email and return boolean status."""
     success, _ = send_email_detailed(to_email, subject, html_body, text_body)
     return success
 

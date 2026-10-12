@@ -112,11 +112,19 @@ def mock_get_next_id(collection_name: str) -> int:
     counters[collection_name] = counters.get(collection_name, 0) + 1
     return counters[collection_name]
 
+captured_otps = {}
+
+
+def mock_send_otp_fn(email, otp, *args, **kwargs):
+    captured_otps[email] = str(otp)
+    return (True, "Delivered")
+
+
 with patch("app.core.firebase.get_firestore_db", return_value=mock_db), \
      patch("app.db.firestore_service.get_firestore_db", return_value=mock_db), \
      patch("app.core.firebase.get_next_id", side_effect=mock_get_next_id), \
      patch("app.db.firestore_service.get_next_id", side_effect=mock_get_next_id), \
-     patch("app.api.routes.auth_routes.send_otp_email", return_value=(True, "Delivered")), \
+     patch("app.api.routes.auth_routes.send_otp_email", side_effect=mock_send_otp_fn), \
      patch("app.services.email_service.send_email", return_value=True):
 
     from app.main import app
@@ -128,14 +136,16 @@ with patch("app.core.firebase.get_firestore_db", return_value=mock_db), \
     print("=" * 60)
 
     def get_otp_for(email):
+        if email in captured_otps:
+            return captured_otps[email]
         for doc in mock_db.collection("pending_registrations").stream():
             d = doc.to_dict() or {}
-            if d.get("email") == email:
-                return d.get("otp_code")
+            if d.get("email") == email and d.get("otp_code"):
+                return str(d.get("otp_code"))
         for doc in mock_db.collection("email_verifications").stream():
             d = doc.to_dict() or {}
-            if d.get("email") == email:
-                return d.get("otp_code")
+            if d.get("email") == email and d.get("otp_code"):
+                return str(d.get("otp_code"))
         return "123456"
 
     # 1. Health check

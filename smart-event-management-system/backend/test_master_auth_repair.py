@@ -317,9 +317,9 @@ class TestMasterAuthenticationRepair(unittest.TestCase):
         self.assertEqual(resp_new.status_code, 200)
 
     @patch("app.api.routes.auth_routes.send_otp_email")
-    def test_09_smtp_delivery_failure_never_simulates_success(self, mock_send_email):
-        """Verifies that if SMTP rejects or fails delivery, HTTP 502 is returned and no phantom user created."""
-        mock_send_email.return_value = (False, "Gmail SMTP authentication failed. Please verify that your 16-character Google App Password is set correctly in backend .env.")
+    def test_09_email_delivery_failure_never_simulates_success(self, mock_send_email):
+        """Verifies that if email delivery rejects or fails, HTTP 502 is returned and no phantom user created."""
+        mock_send_email.return_value = (False, "Resend API error (HTTP 403): Domain not verified")
 
         payload = {
             "name": "Fail Test",
@@ -334,7 +334,7 @@ class TestMasterAuthenticationRepair(unittest.TestCase):
 
         resp = self.client.post("/api/auth/register", json=payload)
         self.assertEqual(resp.status_code, 502)
-        self.assertIn("Gmail SMTP authentication failed", resp.json()["detail"])
+        self.assertIn("Resend API error", resp.json()["detail"])
 
         # No pending registration or user left behind
         self.assertIsNone(db_service.get_pending_registration(self.test_email))
