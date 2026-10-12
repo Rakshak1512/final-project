@@ -116,6 +116,16 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
+@app.get("/api/index.py")
+def vercel_entrypoint_probe(request: Request):
+    return {
+        "status": "ok",
+        "headers": dict(request.headers),
+        "url": str(request.url),
+        "path": request.scope.get("path")
+    }
+
+
 @app.get("/api", tags=["Health"])
 @app.get("/api/", tags=["Health"])
 def api_root():
