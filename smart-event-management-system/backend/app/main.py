@@ -58,11 +58,28 @@ app.add_middleware(
 
 @app.middleware("http")
 async def vercel_path_rewrite_middleware(request: Request, call_next):
+    path = request.scope.get("path", "")
     route_param = request.query_params.get("__route")
+
+    target_path = None
     if route_param:
-        request.scope["path"] = route_param
-    elif request.headers.get("x-matched-path"):
-        request.scope["path"] = request.headers.get("x-matched-path").split("?", 1)[0]
+        target_path = route_param
+    elif request.headers.get("x-matched-path") and not request.headers.get("x-matched-path", "").startswith("/api/index.py"):
+        target_path = request.headers.get("x-matched-path").split("?", 1)[0]
+    elif request.headers.get("x-forwarded-uri") and not request.headers.get("x-forwarded-uri", "").startswith("/api/index.py"):
+        target_path = request.headers.get("x-forwarded-uri").split("?", 1)[0]
+    elif path.startswith("/api/index.py/"):
+        target_path = path[len("/api/index.py"):]
+    elif path == "/api/index.py":
+        target_path = "/api"
+
+    if target_path:
+        if not target_path.startswith("/"):
+            target_path = "/" + target_path
+        while "//" in target_path:
+            target_path = target_path.replace("//", "/")
+        request.scope["path"] = target_path
+
     return await call_next(request)
 
 try:
@@ -119,16 +136,6 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": "An unexpected error occurred. Please try again later."},
     )
-
-
-@app.get("/api/index.py")
-def vercel_entrypoint_probe(request: Request):
-    return {
-        "status": "ok",
-        "headers": dict(request.headers),
-        "url": str(request.url),
-        "path": request.scope.get("path")
-    }
 
 
 @app.get("/api", tags=["Health"])

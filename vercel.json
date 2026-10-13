@@ -11,8 +11,12 @@
   },
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "/api/index.py?__route=/api/$1"
+    },
+    {
       "source": "/(.*)",
-      "destination": "/api/index.py?__route=/$1"
+      "destination": "/index.html"
     }
   ]
 }
