@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import toast from "react-hot-toast";
 import {
   FiDownload,
@@ -28,25 +29,32 @@ export default function MyRegistrations() {
   const [regs, setRegs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [qrModal, setQrModal] = useState(null);
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelling, setCancelling] = useState(false);
+  const [feedbackModal, setFeedbackModal] = useState(null);
   const { addListener } = useRealtime();
 
   const load = () => {
     setLoading(true);
     setError(false);
+    setErrorMessage("");
 
     registrationService
       .my()
       .then(({ data }) => {
-        setRegs(Array.isArray(data) ? data : []);
+        setRegs(Array.isArray(data) ? data : (data?.registrations || []));
       })
       .catch((err) => {
         console.error("My Registrations load error:", err);
         setError(true);
+        setErrorMessage(
+          err.response?.data?.detail ||
+          "Unable to connect to the EventSphere server. Please verify your connection."
+        );
       })
       .finally(() => setLoading(false));
   };
@@ -312,7 +320,7 @@ export default function MyRegistrations() {
             Failed to Load Registrations
           </h3>
           <p style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 20 }}>
-            Unable to connect to the EventSphere server. Please verify your connection.
+            {errorMessage || "Unable to connect to the EventSphere server. Please verify your connection."}
           </p>
           <button className="btn btn-primary" onClick={load}>
             <FiRefreshCw /> Try Again
@@ -320,9 +328,14 @@ export default function MyRegistrations() {
         </div>
       ) : regs.length === 0 ? (
         <EmptyState
+          icon={<FiClipboard size={26} />}
           title="No registrations yet"
           message="You haven't registered for any events yet. Explore upcoming campus events and join the action!"
-          action={{ label: "Browse Events", href: "/events" }}
+          action={
+            <Link to="/student/events" className="btn btn-primary" style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <FiCalendar /> Browse Events
+            </Link>
+          }
         />
       ) : filteredRegs.length === 0 ? (
         <div className="glass-card" style={{ padding: 40, textAlign: "center", borderRadius: 20 }}>
@@ -341,15 +354,16 @@ export default function MyRegistrations() {
         </div>
       ) : (
         <div className="grid-responsive">
-          {filteredRegs.map((r) => {
+          {filteredRegs.map((r, index) => {
             const ev = r.event || {};
             const rawStatus = (r.status || "registered").toLowerCase();
             const isCancelled = rawStatus === "cancelled";
-            const isAttended = rawStatus === "attended" || rawStatus === "completed";
+            const isAttended = rawStatus === "attended" || rawStatus === "completed" || !!r.checked_in_at;
+            const regKey = r.id || r.ticket_code || `reg-${index}`;
 
             return (
               <div
-                key={r.id}
+                key={regKey}
                 className="glass-card"
                 style={{
                   padding: 22,
@@ -374,11 +388,19 @@ export default function MyRegistrations() {
                     alignItems: "center",
                     gap: 8,
                     marginBottom: 12,
+                    flexWrap: "wrap",
                   }}
                 >
-                  <span className={`badge ${statusBadgeClass(rawStatus)}`}>
-                    {rawStatus.toUpperCase()}
-                  </span>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                    <span className={`badge ${statusBadgeClass(rawStatus)}`}>
+                      {rawStatus.toUpperCase()}
+                    </span>
+                    {isAttended && (
+                      <span className="badge badge-success" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                        <FiCheck size={11} /> ATTENDED
+                      </span>
+                    )}
+                  </div>
 
                   <span
                     style={{
@@ -391,7 +413,7 @@ export default function MyRegistrations() {
                       borderRadius: 6,
                     }}
                   >
-                    #{r.ticket_code || `REG-${r.id}`}
+                    #{r.ticket_code || `REG-${r.id || index}`}
                   </span>
                 </div>
 
@@ -492,7 +514,7 @@ export default function MyRegistrations() {
                     </button>
                   )}
 
-                  {!isCancelled && (
+                  {!isCancelled && !isAttended && (
                     <button
                       className="btn btn-sm"
                       style={{
