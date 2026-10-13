@@ -1,15 +1,22 @@
-# Backend Environment and Secrets
+# Environment variables and secrets
 .env
 .env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 !.env.example
+!.env.sample
 !**/.env.example
+!**/.env.sample
 
-# Firebase Service Account Credentials and Keys
+# Firebase credentials and keys
 firebase_credentials.json
 *firebase_credentials*.json
 serviceAccountKey.json
-*service_account*.json
+*-firebase-adminsdk-*.json
 *service-account*.json
+*service_account*.json
 *credentials*.json
 *.pem
 *.key
@@ -26,14 +33,18 @@ serviceAccountKey.json
 *.bak
 *.backup
 
-# Python virtual environment
+# Python virtual environment and bytecode
 venv/
 .venv/
 env/
 ENV/
 __pycache__/
 *.py[cod]
+*$py.class
+.python-version.local
 .pytest_cache/
+.Python
+*.so
 
 # Uploads & Temp Runtime Data
 uploads/
@@ -43,6 +54,8 @@ backend.log
 backend_err.log
 backend_out.log
 
-# IDE
+# IDE & Editor files
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
