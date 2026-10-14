@@ -1,11 +1,27 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import toast from "react-hot-toast";
-import { FiPlus, FiEdit2, FiTrash2, FiUsers, FiUpload, FiClock, FiUser, FiInfo, FiGrid, FiSearch } from "react-icons/fi";
+import {
+  FiPlus,
+  FiEdit2,
+  FiTrash2,
+  FiUsers,
+  FiUpload,
+  FiClock,
+  FiUser,
+  FiInfo,
+  FiGrid,
+  FiSearch,
+  FiImage,
+  FiFileText,
+} from "react-icons/fi";
+import { HiSparkles } from "react-icons/hi";
 import Modal from "../../components/ui/Modal.jsx";
 import EmptyState from "../../components/ui/EmptyState.jsx";
 import Pagination from "../../components/ui/Pagination.jsx";
 import { SkeletonGrid } from "../../components/ui/Loader.jsx";
+import EventImage from "../../components/common/EventImage.jsx";
+import EventPosterDesigner from "../../components/events/EventPosterDesigner.jsx";
 import { eventService } from "../../api/services.js";
 import { fileUrl, formatDate } from "../../utils/format.js";
 
@@ -32,6 +48,7 @@ export default function ManageEvents() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
+  const [modalTab, setModalTab] = useState("info");
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [posterFile, setPosterFile] = useState(null);
@@ -63,6 +80,7 @@ export default function ManageEvents() {
     setForm(emptyForm);
     setPosterFile(null);
     setPosterPreview(null);
+    setModalTab("info");
     setModalOpen(true);
   };
 
@@ -83,6 +101,7 @@ export default function ManageEvents() {
     });
     setPosterFile(null);
     setPosterPreview(ev.poster_url ? fileUrl(ev.poster_url) : null);
+    setModalTab("info");
     setModalOpen(true);
   };
 
@@ -256,8 +275,13 @@ export default function ManageEvents() {
           <div className="grid-cards">
             {filteredEvents.map((ev) => (
               <div key={ev.id} className="glass-card" style={{ overflow: "hidden", display: "flex", flexDirection: "column" }}>
-                <div style={{ height: 130, background: "var(--gradient-soft)" }}>
-                  {ev.poster_url && <img src={fileUrl(ev.poster_url)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                <div style={{ height: 140, overflow: "hidden", position: "relative" }}>
+                  <EventImage
+                    src={ev.poster_url}
+                    alt={ev.title}
+                    category={ev.category}
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  />
                 </div>
                 <div style={{ padding: 18, flex: 1, display: "flex", flexDirection: "column" }}>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
@@ -309,122 +333,247 @@ export default function ManageEvents() {
       )}
 
       {/* CREATE / EDIT EVENT MODAL */}
-      <Modal open={modalOpen} onClose={() => !saving && setModalOpen(false)} title={editing ? "Edit Event" : "Add Event"} width={640}>
-        <form onSubmit={handleSubmit}>
-          <div style={{ display: "flex", justifyContent: "center", marginBottom: 18 }}>
-            <label style={{ cursor: "pointer" }}>
-              <div
-                style={{
-                  width: 140,
-                  height: 90,
-                  borderRadius: 14,
-                  background: posterPreview ? `center/cover no-repeat url(${posterPreview})` : "var(--gradient-soft)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  border: "2px dashed var(--border-color)",
-                  color: "#8b5cf6",
-                }}
+      <Modal open={modalOpen} onClose={() => !saving && setModalOpen(false)} title={editing ? "Edit Event" : "Create New Event"} width={840}>
+        {/* Navigation Tabs between Form & AI Poster Designer */}
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            marginBottom: 20,
+            borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+            paddingBottom: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setModalTab("info")}
+            className={`btn btn-sm ${modalTab === "info" ? "btn-primary" : "btn-secondary"}`}
+            style={{ display: "flex", alignItems: "center", gap: 7 }}
+          >
+            <FiFileText size={14} /> 1. Event Details
+          </button>
+          <button
+            type="button"
+            onClick={() => setModalTab("designer")}
+            className={`btn btn-sm ${modalTab === "designer" ? "btn-primary" : "btn-secondary"}`}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 7,
+              background:
+                modalTab === "designer"
+                  ? "linear-gradient(135deg, #8b5cf6, #ec4899)"
+                  : "rgba(139, 92, 246, 0.12)",
+              color: modalTab === "designer" ? "#ffffff" : "#c084fc",
+              borderColor: "rgba(139, 92, 246, 0.3)",
+            }}
+          >
+            <HiSparkles size={14} /> 2. Event Poster Designer
+            {posterPreview && (
+              <span
+                className="badge badge-success"
+                style={{ fontSize: 10, padding: "2px 6px", marginLeft: 4 }}
               >
-                {!posterPreview && (
-                  <span style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
-                    <FiUpload /> Poster
-                  </span>
-                )}
+                Cover Ready
+              </span>
+            )}
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          {/* TAB 1: EVENT DETAILS */}
+          <div style={{ display: modalTab === "info" ? "block" : "none" }}>
+            {/* Poster Header with Quick Launcher */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 16,
+                padding: "14px 18px",
+                background: "var(--bg-base)",
+                borderRadius: 14,
+                border: "1px dashed var(--border-color)",
+                marginBottom: 20,
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                <div
+                  style={{
+                    width: 90,
+                    height: 60,
+                    borderRadius: 10,
+                    overflow: "hidden",
+                    border: "1px solid var(--border-color)",
+                    background: "var(--gradient-soft)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  {posterPreview ? (
+                    <img
+                      src={posterPreview}
+                      alt="Cover preview"
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                    />
+                  ) : (
+                    <span style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 4 }}>
+                      <FiImage size={14} /> No Cover
+                    </span>
+                  )}
+                </div>
+                <div>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--text-primary)" }}>
+                    {posterPreview ? "Event Cover Image Selected" : "Event Cover & Poster"}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>
+                    Upload your own image or design an AI-style flyer poster
+                  </div>
+                </div>
               </div>
-              <input type="file" accept="image/*" style={{ display: "none" }} onChange={handlePoster} />
-            </label>
-          </div>
 
-          <div className="form-group">
-            <label className="form-label">Event Title</label>
-            <input className="form-input" value={form.title} onChange={update("title")} required placeholder="e.g. Annual Hackathon 2026" />
-          </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <label className="btn btn-secondary btn-sm" style={{ cursor: "pointer", margin: 0, display: "flex", alignItems: "center", gap: 6 }}>
+                  <FiUpload size={13} /> Upload File
+                  <input type="file" accept="image/*" style={{ display: "none" }} onChange={handlePoster} />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setModalTab("designer")}
+                  className="btn btn-sm"
+                  style={{
+                    background: "linear-gradient(135deg, rgba(139,92,246,0.25), rgba(236,72,153,0.25))",
+                    borderColor: "rgba(139,92,246,0.5)",
+                    color: "#c084fc",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontWeight: 600,
+                  }}
+                >
+                  <HiSparkles size={13} /> {posterPreview ? "Edit in Studio" : "Open Poster Designer"}
+                </button>
+              </div>
+            </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
             <div className="form-group">
-              <label className="form-label">Category</label>
-              <select className="form-select" value={form.category} onChange={update("category")}>
-                {categories.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
+              <label className="form-label">Event Title</label>
+              <input className="form-input" value={form.title} onChange={update("title")} required placeholder="e.g. Annual Hackathon 2026" />
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <div className="form-group">
+                <label className="form-label">Category</label>
+                <select className="form-select" value={form.category} onChange={update("category")}>
+                  {categories.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Venue</label>
+                <input className="form-input" value={form.venue} onChange={update("venue")} required placeholder="Auditorium / Lab 3" />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Description</label>
+              <textarea className="form-textarea" rows={3} value={form.description} onChange={update("description")} required />
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+              <div className="form-group">
+                <label className="form-label">Event Date</label>
+                <input type="date" className="form-input" value={form.event_date} onChange={update("event_date")} required />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Time</label>
+                <input type="time" className="form-input" value={form.event_time} onChange={update("event_time")} required />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Capacity (Seats)</label>
+                <input type="number" min={1} className="form-input" value={form.total_seats} onChange={update("total_seats")} required />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Registration Type</label>
+              <select className="form-select" value={form.registration_type} onChange={update("registration_type")}>
+                <option value="both">Both (Individual & Team)</option>
+                <option value="individual">Individual Only</option>
+                <option value="team">Team Only</option>
               </select>
             </div>
-            <div className="form-group">
-              <label className="form-label">Venue</label>
-              <input className="form-input" value={form.venue} onChange={update("venue")} required placeholder="Auditorium / Lab 3" />
-            </div>
-          </div>
 
-          <div className="form-group">
-            <label className="form-label">Description</label>
-            <textarea className="form-textarea" rows={3} value={form.description} onChange={update("description")} required />
-          </div>
+            {form.registration_type !== "individual" && (
+              <div className="form-group">
+                <label className="form-label">Max Team Size</label>
+                <input
+                  type="number"
+                  min={2}
+                  max={20}
+                  className="form-input"
+                  value={form.max_team_size}
+                  onChange={update("max_team_size")}
+                  required
+                />
+              </div>
+            )}
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
             <div className="form-group">
-              <label className="form-label">Event Date</label>
-              <input type="date" className="form-input" value={form.event_date} onChange={update("event_date")} required />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Time</label>
-              <input type="time" className="form-input" value={form.event_time} onChange={update("event_time")} required />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Capacity (Seats)</label>
-              <input type="number" min={1} className="form-input" value={form.total_seats} onChange={update("total_seats")} required />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Registration Type</label>
-            <select className="form-select" value={form.registration_type} onChange={update("registration_type")}>
-              <option value="both">Both (Individual & Team)</option>
-              <option value="individual">Individual Only</option>
-              <option value="team">Team Only</option>
-            </select>
-          </div>
-
-          {form.registration_type !== "individual" && (
-            <div className="form-group">
-              <label className="form-label">Max Team Size</label>
-              <input
-                type="number"
-                min={2}
-                max={20}
-                className="form-input"
-                value={form.max_team_size}
-                onChange={update("max_team_size")}
-                required
+              <label className="form-label">Rules & Guidelines (Optional)</label>
+              <textarea
+                className="form-textarea"
+                rows={2}
+                value={form.rules}
+                onChange={update("rules")}
+                placeholder="e.g. 1. Bring college ID card. 2. Laptops required for coding rounds."
               />
             </div>
-          )}
 
-          <div className="form-group">
-            <label className="form-label">Rules & Guidelines (Optional)</label>
-            <textarea
-              className="form-textarea"
-              rows={2}
-              value={form.rules}
-              onChange={update("rules")}
-              placeholder="e.g. 1. Bring college ID card. 2. Laptops required for coding rounds."
+            <div className="form-group">
+              <label className="form-label">Requirements & Eligibility (Optional)</label>
+              <textarea
+                className="form-textarea"
+                rows={2}
+                value={form.requirements}
+                onChange={update("requirements")}
+                placeholder="e.g. Open to all 2nd and 3rd year engineering students."
+              />
+            </div>
+          </div>
+
+          {/* TAB 2: POSTER DESIGNER (Kept mounted to preserve state & canvas) */}
+          <div style={{ display: modalTab === "designer" ? "block" : "none" }}>
+            <EventPosterDesigner
+              eventForm={form}
+              onApplyPoster={(file, dataUrl) => {
+                setPosterFile(file);
+                setPosterPreview(dataUrl);
+                setModalTab("info");
+              }}
+              existingPosterUrl={editing?.poster_url}
             />
           </div>
 
-          <div className="form-group">
-            <label className="form-label">Requirements & Eligibility (Optional)</label>
-            <textarea
-              className="form-textarea"
-              rows={2}
-              value={form.requirements}
-              onChange={update("requirements")}
-              placeholder="e.g. Open to all 2nd and 3rd year engineering students."
-            />
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            {modalTab === "designer" && (
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => setModalTab("info")}
+              >
+                Back to Details
+              </button>
+            )}
+            <button className="btn btn-primary" style={{ flex: 1 }} disabled={saving}>
+              {saving ? "Saving..." : editing ? "Save Changes" : "Create Event"}
+            </button>
           </div>
-
-          <button className="btn btn-primary" style={{ width: "100%", marginTop: 8 }} disabled={saving}>
-            {saving ? "Saving..." : editing ? "Save Changes" : "Create Event"}
-          </button>
         </form>
       </Modal>
 

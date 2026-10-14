@@ -62,25 +62,40 @@ async def save_upload(file: UploadFile, category: str) -> str:
 
     rel_path = os.path.join("uploads", category, safe_filename).replace("\\", "/")
 
-    # Also persist to Firebase Cloud Storage
+    # Also persist to Firebase Cloud Storage if configured
     content_type = file.content_type or ("application/pdf" if ext == ".pdf" else "application/octet-stream")
-    upload_to_firebase_storage(contents, rel_path, content_type=content_type)
+    success, cloud_url = upload_to_firebase_storage(contents, rel_path, content_type=content_type)
+    if success and cloud_url:
+        return cloud_url
 
     return rel_path
 
 
 def delete_file_if_exists(path: str) -> None:
-    if path:
-        clean = path.replace("\\", "/")
-        if clean.startswith("uploads/"):
-            clean_sub = clean[len("uploads/") :]
-        else:
-            clean_sub = clean
-        full_path = os.path.join(settings.upload_dir_abs, clean_sub) if not os.path.isabs(path) else path
-        if os.path.exists(full_path):
-            try:
-                os.remove(full_path)
-            except OSError:
-                pass
-        delete_from_firebase_storage(clean)
+    if not path:
+        return
+
+    # If it is a Firebase Cloud Storage URL, parse and delete from bucket
+    if "firebasestorage.googleapis.com" in path:
+        try:
+            from urllib.parse import unquote
+            if "/o/" in path:
+                blob_name = unquote(path.split("/o/")[1].split("?")[0])
+                delete_from_firebase_storage(blob_name)
+        except Exception:
+            pass
+        return
+
+    clean = path.replace("\\", "/")
+    if clean.startswith("uploads/"):
+        clean_sub = clean[len("uploads/") :]
+    else:
+        clean_sub = clean
+    full_path = os.path.join(settings.upload_dir_abs, clean_sub) if not os.path.isabs(path) else path
+    if os.path.exists(full_path):
+        try:
+            os.remove(full_path)
+        except OSError:
+            pass
+    delete_from_firebase_storage(clean)
 

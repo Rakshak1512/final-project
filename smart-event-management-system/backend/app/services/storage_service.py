@@ -48,26 +48,40 @@ def get_storage_bucket():
         return None
 
 
+import uuid
+from urllib.parse import quote, unquote
+
 def upload_to_firebase_storage(
     file_bytes: bytes,
     destination_blob_name: str,
     content_type: str = "application/pdf",
-) -> bool:
-    """Upload byte content to Firebase Cloud Storage."""
+) -> tuple[bool, Optional[str]]:
+    """
+    Upload byte content to Firebase Cloud Storage.
+    Returns (success: bool, download_url: Optional[str]).
+    """
     try:
         bucket = get_storage_bucket()
         if not bucket:
-            return False
+            return False, None
 
         # Clean blob name
         clean_name = destination_blob_name.replace("\\", "/").lstrip("/")
         blob = bucket.blob(clean_name)
+
+        # Generate a standard Firebase download token
+        token = str(uuid.uuid4())
+        blob.metadata = {"firebaseStorageDownloadTokens": token}
+
         blob.upload_from_string(file_bytes, content_type=content_type)
         logger.info("Persisted '%s' to Firebase Cloud Storage", clean_name)
-        return True
+
+        encoded_name = quote(clean_name, safe="")
+        public_url = f"https://firebasestorage.googleapis.com/v0/b/{bucket.name}/o/{encoded_name}?alt=media&token={token}"
+        return True, public_url
     except Exception as e:
         logger.warning("Could not persist '%s' to Firebase Storage: %s", destination_blob_name, e)
-        return False
+        return False, None
 
 
 def download_from_firebase_storage(blob_name: str) -> Optional[bytes]:

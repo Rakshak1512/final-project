@@ -26,6 +26,7 @@ import { eventService, registrationService } from "../../api/services.js";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { useRealtime } from "../../context/RealtimeContext.jsx";
 import { fileUrl, formatDate } from "../../utils/format.js";
+import EventImage from "../../components/common/EventImage.jsx";
 
 export default function EventDetail({ embedded = false }) {
   const { id } = useParams();
@@ -241,14 +242,13 @@ export default function EventDetail({ embedded = false }) {
         <p>Event not found.</p>
       ) : (
         <div className="glass-card" style={{ overflow: "hidden" }}>
-          <div style={{ height: 280, background: "var(--gradient-soft)", position: "relative" }}>
-            {event.poster_url ? (
-              <img src={fileUrl(event.poster_url)} alt={event.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            ) : (
-              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <FiCalendar size={48} color="#8b5cf6" />
-              </div>
-            )}
+          <div style={{ height: 280, position: "relative", overflow: "hidden" }}>
+            <EventImage
+              src={event.poster_url}
+              alt={event.title}
+              category={event.category}
+              style={{ height: "100%" }}
+            />
           </div>
 
           <div style={{ padding: 32 }}>

@@ -10,14 +10,41 @@ const backendBase = rawApiUrl ? rawApiUrl.replace(/\/api\/?$/, "").replace(/\/+$
 
 export function fileUrl(path) {
   if (!path) return null;
-  if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("data:")) return path;
-  const normalized = path.replace(/\\/g, "/");
+  const str = String(path).trim();
+  if (!str) return null;
+
+  // 1. Fully-qualified or data URL - NEVER prepend backend URL
+  if (
+    str.startsWith("http://") ||
+    str.startsWith("https://") ||
+    str.startsWith("data:") ||
+    str.startsWith("blob:")
+  ) {
+    return str;
+  }
+
+  // 2. Normalize slashes
+  const normalized = str.replace(/\\/g, "/").replace(/\/+/g, "/");
+
+  // 3. Handle Firebase Storage gs:// URIs
+  if (normalized.startsWith("gs://")) {
+    const afterBucket = normalized.replace(/^gs:\/\/[^/]+\//, "");
+    const cleanRel = afterBucket.replace(/^\/?(uploads\/)+/, "");
+    return `/api/uploads/${cleanRel}`;
+  }
+
+  // 4. Handle paths that already start with /api/ or api/
   if (normalized.startsWith("/api/") || normalized.startsWith("api/")) {
     const cleanApi = normalized.startsWith("/") ? normalized : `/${normalized}`;
-    return backendBase ? `${backendBase}${cleanApi}` : cleanApi;
+    return cleanApi;
   }
-  const cleanPath = normalized.replace(/^\/?(uploads\/)+/, "");
-  return backendBase ? `${backendBase}/uploads/${cleanPath}` : `/uploads/${cleanPath}`;
+
+  // 5. Clean leading slashes and uploads/ prefix
+  const cleanPath = normalized.replace(/^\/?(uploads\/)+/, "").replace(/^\/+/, "");
+  if (!cleanPath) return null;
+
+  // Route through /api/uploads/ which is handled by Vite proxy in dev and server rewrites in prod
+  return `/api/uploads/${cleanPath}`;
 }
 
 

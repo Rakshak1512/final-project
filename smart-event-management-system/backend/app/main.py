@@ -82,13 +82,69 @@ async def vercel_path_rewrite_middleware(request: Request, call_next):
 
     return await call_next(request)
 
+import mimetypes
+from fastapi.responses import Response
+
 try:
     os.makedirs(settings.upload_dir_abs, exist_ok=True)
     for sub in ("profile_pictures", "event_posters", "certificates", "qrcodes"):
         os.makedirs(os.path.join(settings.upload_dir_abs, sub), exist_ok=True)
-    app.mount("/uploads", StaticFiles(directory=settings.upload_dir_abs), name="uploads")
 except Exception as _fs_err:
-    logger.warning("Could not mount local /uploads directory (serverless read-only mode): %s", _fs_err)
+    logger.warning("Could not initialize local uploads directory: %s", _fs_err)
+
+
+@app.get("/api/uploads/{category}/{filename}", tags=["Media"])
+@app.get("/uploads/{category}/{filename}", tags=["Media"])
+async def serve_uploaded_media(category: str, filename: str):
+    """
+    Authoritative media server for event posters, profile pictures, certificates, and QR codes.
+    Checks local disk cache first, then attempts Firebase Storage restore.
+    Returns streaming response with proper Content-Type and caching headers.
+    """
+    clean_cat = os.path.basename(category.strip())
+    clean_fn = os.path.basename(filename.strip())
+    rel_path = f"uploads/{clean_cat}/{clean_fn}"
+
+    file_bytes = None
+    local_path = os.path.join(settings.upload_dir_abs, clean_cat, clean_fn)
+    if os.path.exists(local_path):
+        try:
+            with open(local_path, "rb") as f:
+                file_bytes = f.read()
+        except Exception as e:
+            logger.warning("Could not read local file %s: %s", local_path, e)
+
+    if not file_bytes:
+        try:
+            from app.services.storage_service import download_from_firebase_storage
+
+            file_bytes = download_from_firebase_storage(rel_path)
+            if file_bytes:
+                try:
+                    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                    with open(local_path, "wb") as f:
+                        f.write(file_bytes)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    if not file_bytes:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media file not found")
+
+    mime_type, _ = mimetypes.guess_type(clean_fn)
+    if not mime_type:
+        mime_type = "image/png" if clean_fn.lower().endswith(".png") else "image/jpeg"
+
+    return Response(
+        content=file_bytes,
+        media_type=mime_type,
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "Content-Disposition": f'inline; filename="{clean_fn}"',
+        },
+    )
+
 
 
 @app.on_event("startup")

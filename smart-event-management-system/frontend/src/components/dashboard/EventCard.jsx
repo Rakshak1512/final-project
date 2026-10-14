@@ -1,7 +1,8 @@
 import { motion } from "framer-motion";
 import { FiCalendar, FiClock, FiMapPin, FiUsers, FiArrowRight } from "react-icons/fi";
 import { Link, useLocation } from "react-router-dom";
-import { fileUrl, formatDate } from "../../utils/format.js";
+import { formatDate } from "../../utils/format.js";
+import EventImage from "../common/EventImage.jsx";
 
 export default function EventCard({ event, actionSlot, index = 0 }) {
   const location = useLocation();
@@ -30,41 +31,20 @@ export default function EventCard({ event, actionSlot, index = 0 }) {
         position: "relative",
       }}
     >
-      {/* Poster with hover zoom */}
+      {/* Poster with hover zoom and graceful fallback */}
       <div
         style={{
           height: 175,
-          background: "var(--gradient-soft)",
           position: "relative",
           overflow: "hidden",
         }}
       >
-        {event.poster_url ? (
-          <motion.img
-            src={fileUrl(event.poster_url)}
-            alt={event.title}
-            whileHover={{ scale: 1.06 }}
-            transition={{ duration: 0.35, ease: "easeOut" }}
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-              display: "block",
-            }}
-          />
-        ) : (
-          <div
-            style={{
-              height: "100%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: "var(--gradient-soft)",
-            }}
-          >
-            <FiCalendar size={42} color="#8b5cf6" style={{ opacity: 0.8 }} />
-          </div>
-        )}
+        <EventImage
+          src={event.poster_url}
+          alt={event.title}
+          category={event.category}
+          hoverZoom
+        />
 
         {/* Category Badge */}
         <span

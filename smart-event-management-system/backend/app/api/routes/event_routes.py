@@ -74,6 +74,21 @@ def get_event_history(
     return db_service.get_event_edit_history(event_id)
 
 
+@router.get("/{event_id}/poster")
+def get_event_poster(event_id: int):
+    event = db_service.get_event_by_id(event_id)
+    if not event or not event.poster_url:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event poster not found")
+    from fastapi.responses import RedirectResponse
+    clean = event.poster_url.replace("\\", "/").strip()
+    if clean.startswith(("http://", "https://", "data:", "blob:")):
+        return RedirectResponse(url=clean)
+    rel = clean.lstrip("/")
+    if rel.startswith("uploads/"):
+        rel = rel[len("uploads/") :]
+    return RedirectResponse(url=f"/api/uploads/{rel}")
+
+
 @router.post("", response_model=EventOut, status_code=status.HTTP_201_CREATED)
 async def create_event(
     title: str = Form(...),
@@ -88,11 +103,12 @@ async def create_event(
     rules: Optional[str] = Form(None),
     requirements: Optional[str] = Form(None),
     poster: Optional[UploadFile] = File(None),
+    poster_url: Optional[str] = Form(None),
     current_user: User = Depends(require_role(RoleEnum.faculty, RoleEnum.admin)),
 ):
-    poster_url = None
+    final_poster_url = poster_url.strip() if poster_url and poster_url.strip() else None
     if poster:
-        poster_url = await save_upload(poster, "event_posters")
+        final_poster_url = await save_upload(poster, "event_posters")
 
     parsed_date = date.fromisoformat(str(event_date).strip()) if isinstance(event_date, str) else event_date
 
@@ -105,7 +121,7 @@ async def create_event(
         event_time=event_time,
         total_seats=total_seats,
         available_seats=total_seats,
-        poster_url=poster_url,
+        poster_url=final_poster_url,
         created_by=current_user.id,
         registration_type=registration_type,
         max_team_size=max_team_size,
@@ -130,6 +146,7 @@ async def update_event(
     rules: Optional[str] = Form(None),
     requirements: Optional[str] = Form(None),
     poster: Optional[UploadFile] = File(None),
+    poster_url: Optional[str] = Form(None),
     current_user: User = Depends(require_role(RoleEnum.faculty, RoleEnum.admin)),
 ):
     event = db_service.get_event_by_id(event_id)
@@ -188,8 +205,13 @@ async def update_event(
         new_poster = await save_upload(poster, "event_posters")
         updates["poster_url"] = new_poster
         changed_fields["poster"] = {"old": "Previous Poster", "new": "Updated Poster"}
-        if old_poster:
+        if old_poster and not old_poster.startswith("http"):
             delete_file_if_exists(old_poster)
+    elif poster_url is not None:
+        clean_p = poster_url.strip()
+        if clean_p and clean_p != event.poster_url:
+            updates["poster_url"] = clean_p
+            changed_fields["poster"] = {"old": "Previous Poster", "new": "Updated Poster"}
 
     # Any authenticated faculty or admin can update the event; original created_by remains untouched!
     updates["updated_by"] = current_user.id
