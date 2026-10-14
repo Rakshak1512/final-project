@@ -23,17 +23,25 @@ service cloud.firestore {
       return isRole('faculty') || isAdmin();
     }
 
-    // Counters for sequential integer IDs (Admin SDK / backend transaction only)
+    // Counters & System metadata (Admin SDK / backend transaction only)
     match /_counters/{counterId} {
       allow read, write: if false; // Only accessible via Firebase Admin SDK backend
+    }
+
+    match /system/{docId} {
+      allow read, write: if false; // Internal locks & meta accessible only by Backend
+    }
+
+    match /pending_registrations/{docId} {
+      allow read, write: if false; // Verification state managed solely by Backend Admin SDK
     }
 
     // Users Collection
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow create: if true; // Public registration
+      allow create: if false; // All account creation goes through backend API after OTP verification
       allow update: if isOwner(userId) || isAdmin();
-      allow delete: if isAdmin();
+      allow delete: if isOwner(userId) || isAdmin();
     }
 
     // Events Collection

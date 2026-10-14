@@ -21,6 +21,7 @@ from app.db import firestore_service as db_service
 from app.dependencies import get_client_ip, get_current_user
 from app.models.user import RoleEnum, User
 from app.schemas.user_schema import (
+    AdminAvailabilityOut,
     EmailSendOtpRequest,
     EmailVerifyOtpRequest,
     ForgotPasswordRequest,
@@ -49,6 +50,15 @@ from app.services.email_service import (
 
 logger = logging.getLogger("app.auth")
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
+
+
+@router.get("/admin-availability", response_model=AdminAvailabilityOut)
+def get_admin_availability():
+    """Returns whether creation of an Admin account is currently available or occupied."""
+    avail = db_service.is_admin_registration_available()
+    cnt = db_service.get_active_admin_count()
+    return AdminAvailabilityOut(available=avail, active_admin_count=cnt)
+
 
 
 def _log(user_id, action: str, request: Request, details: str = None):
@@ -80,8 +90,11 @@ def firebase_register(payload: FirebaseRegisterRequest, request: Request):
 
     if payload.role == RoleEnum.student and not payload.registration_number:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Registration number is required for students")
-    if payload.role == RoleEnum.admin and not (payload.admin_id or payload.registration_number):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Admin ID is required for admins")
+    if payload.role == RoleEnum.admin:
+        if not (payload.admin_id or payload.registration_number):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Admin ID is required for admins")
+        if not db_service.is_admin_registration_available():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="An active Admin account already exists. Only one Admin account is permitted.")
 
     existing = db_service.get_user_by_email(clean_email)
     if existing and existing.is_email_verified:
@@ -205,10 +218,11 @@ def firebase_session(payload: FirebaseSessionRequest, request: Request):
         )
 
     user_role_str = (user.role.value if hasattr(user.role, "value") else str(user.role)).lower().strip()
-    if user_role_str != role_str.lower().strip():
+    target_role_str = role_str.lower().strip()
+    if user_role_str != target_role_str:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your account does not have permission for this role.",
+            detail=f"Selected role '{target_role_str}' does not match your registered account role.",
         )
 
     appr_st = str(getattr(user, "approval_status", "APPROVED") or "APPROVED").upper().strip()
@@ -237,17 +251,54 @@ def register(payload: UserCreate, request: Request):
     sem = payload.semester.strip() if payload.semester and payload.semester.strip() else None
     role_str = payload.role.value if hasattr(payload.role, "value") else str(payload.role)
 
-    if payload.role == RoleEnum.admin and admin_id and not reg_num:
-        reg_num = admin_id
+    if payload.role == RoleEnum.admin:
+        if admin_id and not reg_num:
+            reg_num = admin_id
+        if not db_service.is_admin_registration_available():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="An active Admin account already exists. Only one Admin account is permitted.",
+            )
+
+    # Validate role-specific required identifiers
+    if payload.role == RoleEnum.student:
+        if not reg_num:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Registration number is required for students")
+        if not dept:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Department is required for students")
+        if not sem:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Semester is required for students")
+    elif payload.role in (RoleEnum.faculty, RoleEnum.volunteer):
+        if not dept:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Department is required")
+    elif payload.role == RoleEnum.admin:
+        if not (admin_id or reg_num):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Admin ID is required for admins")
 
     existing = db_service.get_user_by_email(clean_email)
-    if existing and existing.is_email_verified:
+    if existing and existing.is_email_verified and not getattr(existing, "is_deleted", False):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="An account with this email already exists.")
 
     if reg_num and payload.role == RoleEnum.student:
         existing_reg = db_service.get_user_by_reg_no(reg_num)
-        if existing_reg and existing_reg.is_email_verified:
+        if existing_reg and existing_reg.is_email_verified and not getattr(existing_reg, "is_deleted", False):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Registration number already in use")
+
+    # Check if a pending registration for this email is currently active with cooldown
+    pending_existing = db_service.get_pending_registration(clean_email)
+    if pending_existing:
+        last_sent = pending_existing.get("last_sent_at")
+        if isinstance(last_sent, datetime):
+            if last_sent.tzinfo is None:
+                last_sent = last_sent.replace(tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - last_sent).total_seconds()
+            cooldown = settings.OTP_RESEND_COOLDOWN_SECONDS or 60
+            if elapsed < cooldown:
+                wait_sec = int(cooldown - elapsed)
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"A verification code was recently sent. Please wait {wait_sec} seconds before requesting a new code.",
+                )
 
     try:
         otp = generate_otp()
@@ -376,20 +427,36 @@ def verify_email(payload: VerifyEmailRequest, request: Request):
             is_active_flag = True
 
         # Create user in permanent users table now that email is verified
-        created_user = db_service.create_user(
-            name=pending["name"],
-            email=pending["email"],
-            hashed_password=pending["hashed_password"],
-            role=pending["role"],
-            registration_number=pending.get("registration_number"),
-            admin_id=pending.get("admin_id"),
-            phone=pending.get("phone"),
-            department=pending.get("department"),
-            semester=pending.get("semester"),
-            is_email_verified=True,
-            is_active=is_active_flag,
-            approval_status=appr_status,
-        )
+        if p_role == "admin":
+            ok, msg, created_user = db_service.create_admin_user_atomic(
+                name=pending["name"],
+                email=pending["email"],
+                hashed_password=pending["hashed_password"],
+                admin_id=pending.get("admin_id"),
+                registration_number=pending.get("registration_number"),
+                phone=pending.get("phone"),
+                department=pending.get("department"),
+                semester=pending.get("semester"),
+                is_email_verified=True,
+            )
+            if not ok or not created_user:
+                db_service.delete_pending_registration(clean_email)
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg or "Admin account creation failed.")
+        else:
+            created_user = db_service.create_user(
+                name=pending["name"],
+                email=pending["email"],
+                hashed_password=pending["hashed_password"],
+                role=pending["role"],
+                registration_number=pending.get("registration_number"),
+                admin_id=pending.get("admin_id"),
+                phone=pending.get("phone"),
+                department=pending.get("department"),
+                semester=pending.get("semester"),
+                is_email_verified=True,
+                is_active=is_active_flag,
+                approval_status=appr_status,
+            )
 
         db_service.delete_pending_registration(clean_email)
         logger.info("[AUTH] [APPROVAL] User %s created with status %s (ID: %s)", _mask_email(clean_email), appr_status, created_user.id)
@@ -450,10 +517,11 @@ def send_email_login_otp(payload: EmailSendOtpRequest, request: Request):
         )
 
     user_role_str = (user.role.value if hasattr(user.role, "value") else str(user.role)).lower().strip()
-    if user_role_str != role_str.lower().strip():
+    target_role_str = role_str.lower().strip()
+    if user_role_str != target_role_str:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your account does not have permission for this role.",
+            detail=f"Selected role '{target_role_str}' does not match your registered account role.",
         )
 
     appr_st = str(getattr(user, "approval_status", "APPROVED") or "APPROVED").upper().strip()
@@ -486,10 +554,11 @@ def verify_email_login_otp(payload: EmailVerifyOtpRequest, request: Request):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     user_role_str = (user.role.value if hasattr(user.role, "value") else str(user.role)).lower().strip()
-    if user_role_str != role_str.lower().strip():
+    target_role_str = role_str.lower().strip()
+    if user_role_str != target_role_str:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your account does not have permission for this role.",
+            detail=f"Selected role '{target_role_str}' does not match your registered account role.",
         )
 
     appr_st = str(getattr(user, "approval_status", "APPROVED") or "APPROVED").upper().strip()
@@ -588,13 +657,13 @@ def login(payload: UserLogin, request: Request):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
 
     user_role_str = (user.role.value if hasattr(user.role, "value") else str(user.role)).lower().strip()
-    if user_role_str != role_str.lower().strip():
-        if user_role_str == "student" and role_str.lower().strip() in ["admin", "faculty"]:
-            _log(user.id, "login_role_mismatch", request)
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your account does not have permission for this role.",
-            )
+    target_role_str = role_str.lower().strip()
+    if user_role_str != target_role_str:
+        _log(user.id, "login_role_mismatch", request)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Selected role '{target_role_str}' does not match your registered account role.",
+        )
 
     if not user.is_email_verified:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Please verify your email first")

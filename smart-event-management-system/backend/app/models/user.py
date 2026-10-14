@@ -43,6 +43,7 @@ class User:
         rejected_by: Optional[int] = None,
         rejected_at: Optional[datetime] = None,
         rejection_reason: Optional[str] = None,
+        notification_preferences: Optional[dict] = None,
         created_at: Optional[datetime] = None,
         updated_at: Optional[datetime] = None,
     ):
@@ -76,6 +77,7 @@ class User:
         self.is_email_verified = bool(is_email_verified)
         self.is_active = bool(is_active)
         self.is_deleted = bool(is_deleted)
+        self.notification_preferences = notification_preferences or {"in_app": True, "email": True}
 
         # Normalize approval_status to standard values: APPROVED, PENDING, REJECTED, REMOVED
         raw_status = str(approval_status or "").upper().strip()
@@ -134,6 +136,7 @@ class User:
             "rejected_by": self.rejected_by,
             "rejected_at": self.rejected_at,
             "rejection_reason": self.rejection_reason,
+            "notification_preferences": self.notification_preferences or {"in_app": True, "email": True},
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -172,6 +175,7 @@ class User:
             rejected_by=data.get("rejected_by"),
             rejected_at=data.get("rejected_at"),
             rejection_reason=data.get("rejection_reason"),
+            notification_preferences=data.get("notification_preferences") or {"in_app": True, "email": True},
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
         )

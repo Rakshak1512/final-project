@@ -22,6 +22,7 @@ from app.utils.email_utils import (
     send_registration_approved_email,
     send_registration_cancellation_email,
     send_registration_confirmation_email,
+    send_registration_rejected_email,
 )
 from app.utils.pdf_utils import generate_registration_slip_pdf
 from app.utils.qr_utils import generate_qr_code, generate_qr_png_bytes, generate_ticket_code
@@ -329,8 +330,11 @@ def update_registration_status(
     if not updated_reg:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registration not found")
 
-    # 1. Approval workflow
-    if clean_status == "approved" and student and event:
+    is_appr = getattr(updated_reg, "is_approving", False)
+    is_rej = getattr(updated_reg, "is_rejecting", False)
+
+    # 1. Approval workflow (only when transitioned to approved)
+    if is_appr and student and event:
         logger.info("[APPROVAL] Faculty User %s (ID %s) approved registration %s", current_user.name, current_user.id, registration_id)
         db_service.create_notification(
             user_id=student.id,
@@ -351,7 +355,25 @@ def update_registration_status(
         except Exception as e:
             logger.error("[EMAIL ERROR] Exception during approval email dispatch to %s: %s", student.email, e, exc_info=True)
 
-    # 2. Cancellation workflow
+    # 2. Rejection workflow (only when transitioned to rejected)
+    elif is_rej and student and event:
+        logger.info("[REJECTION] Faculty User %s (ID %s) rejected registration %s", current_user.name, current_user.id, registration_id)
+        db_service.create_notification(
+            user_id=student.id,
+            title="Registration Not Approved",
+            message=f"Your registration application for '{event.title}' was not approved.",
+            type=NotificationType.general,
+        )
+        try:
+            send_registration_rejected_email(
+                to_email=student.email,
+                name=student.name,
+                event_title=event.title,
+            )
+        except Exception as e:
+            logger.error("[EMAIL ERROR] Exception during rejection email dispatch to %s: %s", student.email, e, exc_info=True)
+
+    # 3. Cancellation workflow (only when transitioned to cancelled)
     elif is_cancelling and student and event:
         logger.info("[CANCELLATION] Faculty User %s (ID %s) cancelled registration %s", current_user.name, current_user.id, registration_id)
         db_service.create_notification(

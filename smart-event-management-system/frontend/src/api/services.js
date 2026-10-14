@@ -14,6 +14,7 @@ export const authService = {
   verifyResetOtp: (payload) => api.post("/auth/verify-reset-otp", payload),
   resetPassword: (payload) => api.post("/auth/reset-password", payload),
   me: () => api.get("/auth/me"),
+  getAdminAvailability: () => api.get("/auth/admin-availability"),
 };
 
 /* ---------------- Events ---------------- */
@@ -191,6 +192,8 @@ export const userService = {
   updateEmail: (payload) => api.put("/users/email", payload),
 
   changePassword: (payload) => api.put("/users/password", payload),
+
+  updateNotificationPreferences: (payload) => api.put("/users/notification-preferences", payload),
 
   deleteAccount: () => api.delete("/users/me"),
 };

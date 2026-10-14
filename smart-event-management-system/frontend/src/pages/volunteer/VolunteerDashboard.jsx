@@ -89,9 +89,13 @@ export default function VolunteerDashboard() {
 
   useEffect(() => {
     fetchDashboardData();
+    return () => {
+      stopActiveStream();
+    };
   }, []);
 
   // Completely stop any running camera stream to guarantee only one stream is active at a time
+  // and release all camera hardware tracks
   const stopActiveStream = async () => {
     if (html5QrCodeInstance.current) {
       try {
@@ -102,6 +106,20 @@ export default function VolunteerDashboard() {
         // Ignore expected teardown errors
       }
     }
+    // Also explicitly find any active video elements or media streams and stop all tracks
+    try {
+      const videoEls = document.querySelectorAll("#qr-reader-box video");
+      videoEls.forEach((v) => {
+        if (v.srcObject && typeof v.srcObject.getTracks === "function") {
+          v.srcObject.getTracks().forEach((track) => {
+            try {
+              track.stop();
+            } catch (err) {}
+          });
+          v.srcObject = null;
+        }
+      });
+    } catch (e) {}
   };
 
   // Enumerate cameras and filter exclusively for the primary standard Front and Back cameras
@@ -1111,7 +1129,10 @@ export default function VolunteerDashboard() {
                     </div>
                   </div>
                   <button
-                    onClick={() => setScannerOpen(false)}
+                    onClick={() => {
+                      stopActiveStream();
+                      setScannerOpen(false);
+                    }}
                     style={{
                       background: "none",
                       border: "none",

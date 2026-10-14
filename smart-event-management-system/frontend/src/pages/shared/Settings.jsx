@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
-import { FiLock, FiMoon, FiSun, FiLogOut, FiTrash2, FiAlertTriangle, FiEye, FiEyeOff } from "react-icons/fi";
+import { FiLock, FiMoon, FiSun, FiLogOut, FiTrash2, FiAlertTriangle, FiEye, FiEyeOff, FiBell } from "react-icons/fi";
 import { useTheme } from "../../context/ThemeContext.jsx";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { userService } from "../../api/services.js";
@@ -9,7 +9,7 @@ import Modal from "../../components/ui/Modal.jsx";
 
 export default function Settings() {
   const { theme, setTheme } = useTheme();
-  const { logout, deleteAccount } = useAuth();
+  const { user, logout, deleteAccount, updateUser } = useAuth();
   const navigate = useNavigate();
 
   const [form, setForm] = useState({ current_password: "", new_password: "", confirm_new_password: "" });
@@ -19,6 +19,35 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  const [notifPrefs, setNotifPrefs] = useState({
+    in_app: user?.notification_preferences?.in_app ?? true,
+    email: user?.notification_preferences?.email ?? true,
+  });
+
+  useEffect(() => {
+    if (user?.notification_preferences) {
+      setNotifPrefs({
+        in_app: user.notification_preferences.in_app ?? true,
+        email: user.notification_preferences.email ?? true,
+      });
+    }
+  }, [user]);
+
+  const handleToggleNotif = async (key, val) => {
+    const updated = { ...notifPrefs, [key]: val };
+    setNotifPrefs(updated);
+    try {
+      const res = await userService.updateNotificationPreferences(updated);
+      if (updateUser && res.data) {
+        updateUser(res.data);
+      }
+      toast.success(`${key === "in_app" ? "In-app" : "Email"} notification preference saved.`);
+    } catch (err) {
+      toast.error("Failed to update notification preferences.");
+      setNotifPrefs(notifPrefs);
+    }
+  };
 
   const update = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
 
@@ -208,6 +237,92 @@ export default function Settings() {
               >
                 <FiMoon size={20} /> Dark Mode
               </button>
+            </div>
+          </div>
+
+          {/* Notification Preferences */}
+          <div className="glass-card" style={{ padding: 28 }}>
+            <h3 style={{ fontSize: 16, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+              <FiBell /> Notification Preferences
+            </h3>
+            <p style={{ fontSize: 13.5, color: "var(--text-secondary)", marginBottom: 18 }}>
+              Choose your notification preferences for event updates, approval decisions, and certificates.
+            </p>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {/* In-App Notifications */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "12px 16px",
+                  borderRadius: 12,
+                  background: "var(--bg-base)",
+                  border: "1px solid var(--border-color)",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13.5, marginBottom: 2 }}>In-App Notifications</div>
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                    Receive real-time alerts in your notification bell
+                  </div>
+                </div>
+                <label style={{ cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={notifPrefs.in_app}
+                    onChange={(e) => handleToggleNotif("in_app", e.target.checked)}
+                    style={{ width: 18, height: 18, cursor: "pointer", accentColor: "var(--primary-color, #8b5cf6)" }}
+                  />
+                </label>
+              </div>
+
+              {/* Email Notifications */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "12px 16px",
+                  borderRadius: 12,
+                  background: "var(--bg-base)",
+                  border: "1px solid var(--border-color)",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13.5, marginBottom: 2 }}>Email Notifications</div>
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                    Receive approval, rejection, and certificate emails
+                  </div>
+                </div>
+                <label style={{ cursor: "pointer", display: "inline-flex", alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={notifPrefs.email}
+                    onChange={(e) => handleToggleNotif("email", e.target.checked)}
+                    style={{ width: 18, height: 18, cursor: "pointer", accentColor: "var(--primary-color, #8b5cf6)" }}
+                  />
+                </label>
+              </div>
+
+              {/* Security Email Notice */}
+              <div
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  background: "rgba(139, 92, 246, 0.08)",
+                  border: "1px solid rgba(139, 92, 246, 0.2)",
+                  fontSize: 11.5,
+                  color: "var(--text-secondary)",
+                  lineHeight: 1.45,
+                }}
+              >
+                <strong style={{ color: "var(--text-primary)", display: "block", marginBottom: 2 }}>
+                  Essential Security Email Note:
+                </strong>
+                Disabling email notifications only mutes event and certificate alerts. Essential security emails (OTP verification & password reset) will always be delivered.
+              </div>
             </div>
           </div>
 

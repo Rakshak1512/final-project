@@ -180,6 +180,130 @@ def create_user(
     return user
 
 
+def get_active_admin_count() -> int:
+    """Retrieve count of active, non-deleted administrator accounts."""
+    db = get_firestore_db()
+    docs = db.collection("users").where("role", "==", "admin").stream()
+    count = 0
+    for doc in docs:
+        data = doc.to_dict() or {}
+        is_act = data.get("is_active", False)
+        is_del = data.get("is_deleted", False)
+        st = str(data.get("approval_status", "")).upper().strip()
+        if is_act and not is_del and st not in ("REMOVED", "DELETED"):
+            count += 1
+    return count
+
+
+def is_admin_registration_available() -> bool:
+    """Returns True if no active admin account exists."""
+    return get_active_admin_count() == 0
+
+
+def create_admin_user_atomic(
+    name: str,
+    email: str,
+    hashed_password: str,
+    admin_id: Optional[str] = None,
+    registration_number: Optional[str] = None,
+    phone: Optional[str] = None,
+    department: Optional[str] = None,
+    semester: Optional[str] = None,
+    course: Optional[str] = None,
+    designation: Optional[str] = None,
+    profile_picture: Optional[str] = None,
+    is_email_verified: bool = True,
+) -> Tuple[bool, str, Optional[User]]:
+    """
+    Atomically ensures only one active Admin account can be created and finalized.
+    Prevents race conditions using a Firestore transaction check and system lock.
+    """
+    db = get_firestore_db()
+    lock_ref = db.collection("system").document("admin_meta")
+
+    # Pre-check
+    if get_active_admin_count() > 0:
+        return False, "An active Admin account already exists. Only one Admin account is permitted.", None
+
+    @transactional
+    def _create_admin_txn(txn: Transaction):
+        lock_snap = txn.get(lock_ref)
+        if lock_snap.exists:
+            lock_data = lock_snap.to_dict() or {}
+            if lock_data.get("is_occupied") and lock_data.get("active_admin_id"):
+                admin_uid = str(lock_data.get("active_admin_id"))
+                admin_doc = txn.get(db.collection("users").document(admin_uid))
+                if admin_doc.exists:
+                    a_data = admin_doc.to_dict() or {}
+                    st = str(a_data.get("approval_status", "")).upper().strip()
+                    if a_data.get("is_active") and not a_data.get("is_deleted") and st not in ("REMOVED", "DELETED"):
+                        return False, "An active Admin account already exists. Only one Admin account is permitted.", None
+
+        if get_active_admin_count() > 0:
+            return False, "An active Admin account already exists. Only one Admin account is permitted.", None
+
+        new_user = create_user(
+            name=name,
+            email=email,
+            hashed_password=hashed_password,
+            role=RoleEnum.admin,
+            registration_number=registration_number or admin_id,
+            admin_id=admin_id or registration_number,
+            phone=phone,
+            department=department,
+            semester=semester,
+            course=course,
+            designation=designation or "Institutional Administrator",
+            profile_picture=profile_picture,
+            is_email_verified=is_email_verified,
+            is_active=True,
+            approval_status="APPROVED",
+        )
+
+        txn.set(lock_ref, {
+            "is_occupied": True,
+            "active_admin_id": new_user.id,
+            "active_admin_email": email,
+            "updated_at": datetime.now(timezone.utc),
+        })
+        return True, "Admin created successfully", new_user
+
+    try:
+        txn = db.transaction()
+        return _create_admin_txn(txn)
+    except Exception as e:
+        logger.error("Transaction during admin creation had error: %s. Using fallback.", e)
+        if get_active_admin_count() > 0:
+            return False, "An active Admin account already exists. Only one Admin account is permitted.", None
+        new_user = create_user(
+            name=name,
+            email=email,
+            hashed_password=hashed_password,
+            role=RoleEnum.admin,
+            registration_number=registration_number or admin_id,
+            admin_id=admin_id or registration_number,
+            phone=phone,
+            department=department,
+            semester=semester,
+            course=course,
+            designation=designation or "Institutional Administrator",
+            profile_picture=profile_picture,
+            is_email_verified=is_email_verified,
+            is_active=True,
+            approval_status="APPROVED",
+        )
+        try:
+            lock_ref.set({
+                "is_occupied": True,
+                "active_admin_id": new_user.id,
+                "active_admin_email": email,
+                "updated_at": datetime.now(timezone.utc),
+            })
+        except Exception:
+            pass
+        return True, "Admin created successfully", new_user
+
+
 def get_pending_students() -> List[User]:
     """Retrieve all student accounts awaiting faculty approval."""
     db = get_firestore_db()
@@ -325,6 +449,9 @@ def remove_user_account(user_id: int) -> bool:
         except Exception:
             return False
     now_utc = datetime.now(timezone.utc)
+    u_data = doc.to_dict() or {}
+    u_role = str(u_data.get("role", "")).lower()
+
     doc_ref.update({
         "approval_status": "REMOVED",
         "is_active": False,
@@ -332,6 +459,21 @@ def remove_user_account(user_id: int) -> bool:
         "deleted_at": now_utc,
         "updated_at": now_utc,
     })
+
+    # If deleting Admin, release the exclusive Admin restriction
+    if u_role == "admin":
+        try:
+            lock_ref = db.collection("system").document("admin_meta")
+            lock_ref.set({
+                "is_occupied": False,
+                "active_admin_id": None,
+                "active_admin_email": None,
+                "released_at": now_utc,
+            })
+            logger.info("Exclusive admin restriction successfully released after deleting admin account %s", user_id)
+        except Exception as e:
+            logger.warning("Failed to release admin_meta lock: %s", e)
+
     invalidate_user_caches(user_id)
     return True
 
@@ -1453,7 +1595,10 @@ def update_registration_status(
     reg_data = reg_snap.to_dict() or {}
     old_status = str(reg_data.get("status", "")).strip().lower()
     clean_new_status = str(new_status).strip().lower()
+    status_changed = (old_status != clean_new_status)
     is_cancelling = (clean_new_status == "cancelled" and old_status != "cancelled")
+    is_approving = (clean_new_status == "approved" and old_status != "approved")
+    is_rejecting = (clean_new_status == "rejected" and old_status != "rejected")
 
     updates = {
         "status": clean_new_status,
@@ -1469,6 +1614,13 @@ def update_registration_status(
             updates["approved_by"] = action_by_user_id
         if action_by_user_name:
             updates["approved_by_name"] = action_by_user_name
+
+    elif clean_new_status == "rejected":
+        updates["rejected_at"] = datetime.now(timezone.utc)
+        if action_by_user_id:
+            updates["rejected_by"] = action_by_user_id
+        if action_by_user_name:
+            updates["rejected_by_name"] = action_by_user_name
 
     elif clean_new_status == "cancelled":
         updates["cancelled_at"] = datetime.now(timezone.utc)
@@ -1492,6 +1644,12 @@ def update_registration_status(
 
     invalidate_registration_caches(reg_data.get("event_id"), reg_data.get("student_id"))
     updated_reg = get_registration_by_id(registration_id)
+    if updated_reg:
+        updated_reg.status_changed = status_changed
+        updated_reg.old_status = old_status
+        updated_reg.is_approving = is_approving
+        updated_reg.is_rejecting = is_rejecting
+        updated_reg.is_cancelling = is_cancelling
     return updated_reg, is_cancelling, event, student
 
 
@@ -1698,7 +1856,22 @@ def create_notification(
     title: str,
     message: str,
     type: NotificationType = NotificationType.general,
-) -> Notification:
+    force: bool = False,
+) -> Optional[Notification]:
+    if user_id is None:
+        return None
+    # Respect user's in-app notification preference
+    if not force:
+        try:
+            recipient = get_user_by_id(user_id)
+            if recipient:
+                prefs = getattr(recipient, "notification_preferences", None) or {}
+                if prefs.get("in_app") is False:
+                    logger.debug("In-app notification skipped for user %s per user preferences", user_id)
+                    return None
+        except Exception:
+            pass
+
     db = get_firestore_db()
     notif_id = get_next_id("notifications")
     notif = Notification(

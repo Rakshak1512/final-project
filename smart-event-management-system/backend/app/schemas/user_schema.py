@@ -120,6 +120,7 @@ class UserOut(BaseModel):
     rejected_by: Optional[Union[int, str]] = None
     rejected_at: Optional[datetime] = None
     rejection_reason: Optional[str] = None
+    notification_preferences: Optional[dict] = Field(default_factory=lambda: {"in_app": True, "email": True})
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -203,3 +204,32 @@ class ResetPasswordRequest(BaseModel):
         if "new_password" in info.data and v != info.data["new_password"]:
             raise ValueError("Passwords do not match")
         return v
+
+
+class NotificationPreferencesUpdate(BaseModel):
+    in_app: Optional[bool] = None
+    email: Optional[bool] = None
+    allow_in_app: Optional[bool] = None
+    allow_email: Optional[bool] = None
+
+    def get_in_app(self, default: bool = True) -> bool:
+        if self.in_app is not None:
+            return self.in_app
+        if self.allow_in_app is not None:
+            return self.allow_in_app
+        return default
+
+    def get_email(self, default: bool = True) -> bool:
+        if self.email is not None:
+            return self.email
+        if self.allow_email is not None:
+            return self.allow_email
+        return default
+
+
+class AdminAvailabilityOut(BaseModel):
+    available: bool
+    active_admin_count: int
+    message: Optional[str] = None
+
+

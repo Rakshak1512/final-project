@@ -4,7 +4,13 @@ from app.core.security import hash_password, verify_password
 from app.db import firestore_service as db_service
 from app.dependencies import get_current_approved_user, get_current_user
 from app.models.user import User
-from app.schemas.user_schema import ChangePassword, EmailUpdateRequest, UserOut, UserUpdate
+from app.schemas.user_schema import (
+    ChangePassword,
+    EmailUpdateRequest,
+    NotificationPreferencesUpdate,
+    UserOut,
+    UserUpdate,
+)
 from app.utils.file_utils import delete_file_if_exists, save_upload
 
 router = APIRouter(prefix="/api/users", tags=["User Profile"])
@@ -83,9 +89,27 @@ def change_password(
     return {"message": "Password updated successfully"}
 
 
+@router.put("/notification-preferences", response_model=UserOut)
+def update_notification_preferences(
+    payload: NotificationPreferencesUpdate,
+    current_user: User = Depends(get_current_user),
+):
+    """Update in-app and email notification preferences."""
+    current_prefs = current_user.notification_preferences or {"in_app": True, "email": True}
+    updated_prefs = {
+        "in_app": payload.get_in_app(current_prefs.get("in_app", True)),
+        "email": payload.get_email(current_prefs.get("email", True)),
+    }
+    updated_user = db_service.update_user(
+        current_user.id,
+        {"notification_preferences": updated_prefs},
+    )
+    return updated_user or current_user
+
+
 @router.delete("/me", status_code=status.HTTP_200_OK)
 def delete_account(
-    current_user: User = Depends(get_current_approved_user),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Deactivates (soft-deletes) the current user's account, preserving historical
@@ -94,6 +118,15 @@ def delete_account(
     success = db_service.deactivate_user(current_user.id)
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User account not found")
+
+    # If Firebase Auth is used, attempt cleanup of Firebase Auth record
+    try:
+        from firebase_admin import auth as fb_auth
+        fb_user = fb_auth.get_user_by_email(current_user.email)
+        if fb_user:
+            fb_auth.delete_user(fb_user.uid)
+    except Exception:
+        pass
 
     try:
         db_service.create_audit_log(
@@ -107,3 +140,4 @@ def delete_account(
         pass
 
     return {"message": "Account successfully deactivated and deleted."}
+

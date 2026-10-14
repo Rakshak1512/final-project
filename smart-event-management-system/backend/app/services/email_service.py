@@ -35,6 +35,30 @@ def _mask_email(email: str) -> str:
     return f"{masked_local}@{domain}"
 
 
+def _user_allows_email(user_or_email) -> bool:
+    """Helper to check if user allows optional email notifications (non-security emails). Accepts email str or User object."""
+    try:
+        if hasattr(user_or_email, "notification_preferences"):
+            prefs = getattr(user_or_email, "notification_preferences", None) or {}
+            if prefs.get("email") is False:
+                to_addr = getattr(user_or_email, "email", "")
+                logger.info("[EMAIL] Optional email notification skipped for %s per preferences", _mask_email(to_addr))
+                return False
+            return True
+
+        if isinstance(user_or_email, str):
+            from app.db import firestore_service as db_service
+            user = db_service.get_user_by_email(user_or_email)
+            if user:
+                prefs = getattr(user, "notification_preferences", None) or {}
+                if prefs.get("email") is False:
+                    logger.info("[EMAIL] Optional email notification skipped for %s per preferences", _mask_email(user_or_email))
+                    return False
+    except Exception:
+        pass
+    return True
+
+
 def _send_via_smtp(
     to_addr: str, subject: str, html_body: str, text_body: Optional[str] = None
 ) -> Tuple[bool, str]:
@@ -403,6 +427,8 @@ def send_registration_approved_email(
     ticket_code: Optional[str] = None,
 ) -> bool:
     """Send official registration approval notification email via SMTP."""
+    if not _user_allows_email(to_email):
+        return True
     subject = f"Registration Approved: {event_title}"
     date_val = event_date or "Campus Event Date"
     venue_val = venue or "Campus Venue"
@@ -446,6 +472,8 @@ def send_registration_approved_email(
 
 def send_certificate_uploaded_email(to_email: str, name: str, cert_title: str) -> bool:
     """Send certificate notification email via SMTP."""
+    if not _user_allows_email(to_email):
+        return True
     subject = f"New Certificate Available: {cert_title}"
     html = f"""<!DOCTYPE html>
 <html>
@@ -468,6 +496,8 @@ def send_registration_cancellation_email(
     reason: Optional[str] = None,
 ) -> bool:
     """Send event cancellation notification email via SMTP."""
+    if not _user_allows_email(to_email):
+        return True
     subject = f"Registration Cancelled: {event_title}"
     reason_text = reason or "Cancelled by event coordinator."
 
@@ -496,6 +526,45 @@ def send_registration_cancellation_email(
 </body>
 </html>"""
     return send_email(to_email, subject, html, f"Registration Cancelled for {event_title}. {reason_text}")
+
+
+def send_registration_rejected_email(
+    to_email: str,
+    name: str,
+    event_title: str,
+    reason: Optional[str] = None,
+) -> bool:
+    """Send event registration rejection notification email via SMTP."""
+    if not _user_allows_email(to_email):
+        return True
+    subject = f"Registration Status Update: {event_title}"
+    reason_text = reason or "Your registration could not be approved at this time."
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>{subject}</title></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0f172a; margin: 0; padding: 24px 16px; color: #f8fafc;">
+  <div style="max-width: 500px; margin: 0 auto; background: #1e293b; border-radius: 16px; border: 1px solid #334155; overflow: hidden;">
+    <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 24px; text-align: center;">
+      <h2 style="margin: 0; color: #ffffff;">Registration Not Approved</h2>
+    </div>
+    <div style="padding: 24px;">
+      <p style="margin: 0 0 14px; font-size: 14.5px; color: #f1f5f9;">Hello <strong>{name}</strong>,</p>
+      <p style="margin: 0 0 16px; font-size: 13.5px; color: #cbd5e1; line-height: 1.5;">
+        Your registration application for <strong>{event_title}</strong> was not approved by institutional coordinators.
+      </p>
+      <div style="background: #0f172a; padding: 14px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #334155;">
+        <p style="margin: 0; font-size: 13px; color: #fbbf24;"><strong>Status:</strong> Not Approved</p>
+        <p style="margin: 6px 0 0; font-size: 12.5px; color: #94a3b8;"><strong>Details:</strong> {reason_text}</p>
+      </div>
+      <p style="margin: 0; font-size: 12.5px; color: #94a3b8;">
+        You may explore other open events across campus in the EventSphere portal.
+      </p>
+    </div>
+  </div>
+</body>
+</html>"""
+    return send_email(to_email, subject, html, f"Registration not approved for {event_title}. {reason_text}")
 
 
 def send_attendance_confirmed_student_email(

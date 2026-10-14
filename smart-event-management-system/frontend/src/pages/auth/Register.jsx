@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import toast from "react-hot-toast";
@@ -6,6 +6,7 @@ import { FiCalendar, FiUpload } from "react-icons/fi";
 import ThemeToggle from "../../components/common/ThemeToggle.jsx";
 import PageTransition from "../../components/common/PageTransition.jsx";
 import { useAuth } from "../../context/AuthContext.jsx";
+import { authService } from "../../api/services.js";
 
 const departments = ["Computer Science", "Electronics", "Mechanical", "Civil", "Electrical", "Information Technology", "MBA", "Other"];
 const semesters = ["1", "2", "3", "4", "5", "6", "7", "8"];
@@ -29,6 +30,31 @@ export default function Register() {
   const [picturePreview, setPicturePreview] = useState(null);
   const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
+  const [adminAvailability, setAdminAvailability] = useState(null);
+  const [checkingAdmin, setCheckingAdmin] = useState(false);
+
+  useEffect(() => {
+    if (form.role === "admin") {
+      let isMounted = true;
+      setCheckingAdmin(true);
+      authService
+        .getAdminAvailability()
+        .then((res) => {
+          if (isMounted) {
+            setAdminAvailability(res.data);
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to check admin availability:", err);
+        })
+        .finally(() => {
+          if (isMounted) setCheckingAdmin(false);
+        });
+      return () => {
+        isMounted = false;
+      };
+    }
+  }, [form.role]);
 
   const update = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
 
@@ -50,6 +76,9 @@ export default function Register() {
       if (!form.department) e.department = "Select your department";
     } else if (form.role === "admin") {
       if (!form.admin_id.trim()) e.admin_id = "Admin ID is required";
+      if (adminAvailability && !adminAvailability.available) {
+        e.admin_id = "An administrator account already exists. Only one administrator is allowed.";
+      }
     }
     if (!/^\S+@\S+\.\S+$/.test(form.email)) e.email = "Enter a valid email address";
     if (form.password.length < 8) e.password = "Password must be at least 8 characters";
@@ -254,6 +283,48 @@ export default function Register() {
             ))}
           </div>
 
+          {/* Admin Availability Indicator */}
+          {form.role === "admin" && (
+            <div
+              style={{
+                marginBottom: 20,
+                padding: "12px 14px",
+                borderRadius: 12,
+                fontSize: 13,
+                lineHeight: 1.45,
+                border: checkingAdmin
+                  ? "1px solid var(--border-color)"
+                  : adminAvailability?.available
+                  ? "1px solid rgba(16, 185, 129, 0.4)"
+                  : "1px solid rgba(239, 68, 68, 0.4)",
+                background: checkingAdmin
+                  ? "rgba(139, 92, 246, 0.05)"
+                  : adminAvailability?.available
+                  ? "rgba(16, 185, 129, 0.08)"
+                  : "rgba(239, 68, 68, 0.08)",
+                color: checkingAdmin
+                  ? "var(--text-secondary)"
+                  : adminAvailability?.available
+                  ? "#10b981"
+                  : "#ef4444",
+              }}
+            >
+              {checkingAdmin ? (
+                <div>Checking administrator account availability...</div>
+              ) : adminAvailability?.available ? (
+                <div>
+                  <strong style={{ display: "block", marginBottom: 2 }}>✓ Exclusive Administrator Account Available</strong>
+                  No active administrator is registered. You may create and verify the primary administrator account.
+                </div>
+              ) : (
+                <div>
+                  <strong style={{ display: "block", marginBottom: 2 }}>✕ Administrator Registration Occupied</strong>
+                  An active administrator account already exists. Only one administrator account is permitted at a time.
+                </div>
+              )}
+            </div>
+          )}
+
           <form onSubmit={handleSubmit}>
             <div className="form-group">
               <label className="form-label">Full Name</label>
@@ -381,8 +452,16 @@ export default function Register() {
               </div>
             </div>
 
-            <button className="btn btn-primary" style={{ width: "100%", marginTop: 6 }} disabled={submitting}>
-              {submitting ? "Creating account..." : "Create Account"}
+            <button
+              className="btn btn-primary"
+              style={{ width: "100%", marginTop: 6 }}
+              disabled={submitting || (form.role === "admin" && adminAvailability && !adminAvailability.available)}
+            >
+              {submitting
+                ? "Creating account..."
+                : form.role === "admin" && adminAvailability && !adminAvailability.available
+                ? "Admin Registration Occupied"
+                : "Create Account"}
             </button>
           </form>
 

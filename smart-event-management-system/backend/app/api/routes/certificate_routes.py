@@ -103,6 +103,15 @@ def auto_generate_certificate_endpoint(
             event_title = event.title
             event_date_str = str(event.event_date) if event.event_date else "Campus Event"
 
+    # Prevent duplicate certificate generation and duplicate notification delivery
+    if payload.event_id and clean_reg:
+        existing_certs = db_service.get_certificates_by_registration_number(clean_reg)
+        for existing in existing_certs:
+            if existing.event_id == payload.event_id:
+                cert_dict = existing.to_dict()
+                cert_dict["student_email"] = student.email
+                return CertificateOut(**cert_dict)
+
     from app.core.firebase import get_next_id
     cert_id = get_next_id("certificates")
 
